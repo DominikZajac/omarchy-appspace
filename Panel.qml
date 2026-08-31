@@ -11,8 +11,8 @@ import "Rules.js" as Rules
 // ~/.config/hypr/appws.lua and reloads Hyprland.
 Panel {
   id: root
-  moduleName: "zabka.appws"
-  ipcTarget: "zabka.appws"
+  moduleName: "dominikzajac.appws"
+  ipcTarget: "dominikzajac.appws"
   // We own the single IpcHandler the target allows, so it can carry
   // list/set/unset on top of the base open/close/toggle.
   manageIpc: false
@@ -569,7 +569,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "zabka.appws"
+    target: "dominikzajac.appws"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
