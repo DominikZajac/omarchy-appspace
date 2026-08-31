@@ -36,7 +36,18 @@ because that is the string Hyprland compares against.
 
 Rules derived from a `.desktop` file are labelled **guessed class** until a real
 window confirms them. **verified** means the class came from a live window or from
-a `StartupWMClass` that matches one.
+a `StartupWMClass` that matches one. Confirmation is sticky: once a window has
+proved a class, the rule stays verified after the app closes, and a rule whose
+class no window ever used is called out as one that can never fire.
+
+Steam is a special case worth knowing about. It writes one `.desktop` per game
+with no `StartupWMClass` and a launcher `Exec`, so the plugin reads the game id
+out of `steam://rungameid/<id>` and guesses `steam_app_<id>` — right for XWayland
+games, wrong for native Wayland ones (Factorio actually opens as
+`com.factorio.Factorio`). While a game runs, the plugin reads `SteamAppId` from
+the process environment, learns which class the launcher entry really opens, and
+records that alias, so the launcher entry and the real window collapse into one
+row from then on.
 
 Monitors are matched by `desc:` (make, model and serial), not by connector, so
 moving a cable to another port keeps the layout.
@@ -122,5 +133,5 @@ change. Reverting both files matters too — restoring only the Lua would leave
 | `manifest.json` | plugin manifest |
 | `Panel.qml` | bar widget, both views, write pipeline |
 | `Rules.js` | model, JSON ↔ Lua serialization — no QML, no filesystem |
-| `~/.local/state/omarchy/appws/rules.json` | source of truth (schema 3) |
+| `~/.local/state/omarchy/appws/rules.json` | source of truth (schema 4) |
 | `~/.config/hypr/appws.lua` | generated, overwritten in full |

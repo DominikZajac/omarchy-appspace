@@ -150,3 +150,51 @@ test("a declared StartupWMClass still wins over every fallback", () => {
 test("a normal launcher entry keeps falling back to its desktop id", () => {
   assert.equal(Rules.classFromEntry("", "/usr/bin/foot", "foot.desktop"), "foot")
 })
+
+// Verification used to be computed live, so closing an app demoted its rule
+// back to "guessed" and wrongly flagged it as one that can never fire.
+test("verification is sticky and survives editing the rule", () => {
+  let state = Rules.normalize({ version: 3, rules: [{ class: "com.factorio.Factorio", workspace: "1" }] })
+  assert.equal(Rules.isVerified(state, "com.factorio.Factorio"), false)
+
+  state = Rules.markVerified(state, "com.factorio.Factorio")
+  assert.equal(Rules.isVerified(state, "com.factorio.Factorio"), true)
+
+  state = Rules.upsert(state, "com.factorio.Factorio", "2", true, "Factorio")
+  assert.equal(Rules.isVerified(state, "com.factorio.Factorio"), true)
+
+  assert.equal(Rules.markVerified(state, "com.factorio.Factorio"), null, "no rewrite when nothing changes")
+  assert.equal(Rules.markVerified(state, "never-seen"), null)
+})
+
+test("assigning a rule from a live window records the confirmation immediately", () => {
+  const state = Rules.upsert(Rules.emptyState(), "vesktop", "3", false, "vesktop", true)
+  assert.equal(Rules.isVerified(state, "vesktop"), true)
+})
+
+// Factorio launches from steam://rungameid/427520 but opens a window classed
+// com.factorio.Factorio, which showed the one game as two separate rows.
+test("an alias folds a guessed class onto the class a real window used", () => {
+  let state = Rules.emptyState()
+  assert.equal(Rules.resolveAlias(state, "steam_app_427520"), "steam_app_427520")
+
+  state = Rules.putAlias(state, "steam_app_427520", "com.factorio.Factorio")
+  assert.equal(Rules.resolveAlias(state, "steam_app_427520"), "com.factorio.Factorio")
+
+  assert.equal(Rules.putAlias(state, "steam_app_427520", "com.factorio.Factorio"), null, "no rewrite when unchanged")
+  assert.equal(Rules.putAlias(state, "foot", "foot"), null, "an alias to itself is not an alias")
+  assert.equal(Rules.putAlias(state, "", "x"), null)
+})
+
+test("aliases and confirmations survive a JSON round trip", () => {
+  let state = Rules.putAlias(
+    Rules.markVerified(Rules.upsert(Rules.emptyState(), "vesktop", "3", false, "vesktop"), "vesktop"),
+    "steam_app_1", "real.Class")
+  assert.deepEqual(Rules.normalize(JSON.parse(Rules.toJson(state))), state)
+})
+
+test("a schema 3 file loads with no aliases and nothing confirmed", () => {
+  const state = Rules.normalize({ version: 3, rules: [{ class: "foot", workspace: "1" }], workspaces: {} })
+  assert.deepEqual(state.aliases, {})
+  assert.equal(state.rules[0]["verified"], false)
+})

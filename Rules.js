@@ -4,18 +4,23 @@
 // Nothing here touches QML or the filesystem, so it can be tested standalone
 // and a parsing mistake cannot take the bar down with it.
 
-var SCHEMA_VERSION = 3
+var SCHEMA_VERSION = 4
 
 // ------------------------------------------------------------------ state
 //
 // {
 //   version: 2,
 //   rules:      [ { class, workspace, silent, label } ],   // app  -> workspace
-//   workspaces: { "3": { monitor: "desc:LG ...", persistent: true } }
+//   workspaces: { "3": { monitor: "desc:LG ...", persistent: true } },
+//   aliases:    { "steam_app_427520": "com.factorio.Factorio" }
 // }
+//
+// `aliases` maps a class we had to GUESS from a .desktop file onto the class a
+// real window turned out to use. Without it a Steam game shows up twice: once
+// as its launcher entry and once as the window it actually opens.
 
 function emptyState() {
-  return { rules: [], workspaces: {} }
+  return { rules: [], workspaces: {}, aliases: {} }
 }
 
 function normalize(raw) {
@@ -33,7 +38,11 @@ function normalize(raw) {
       "class": cls,
       "workspace": ws,
       "silent": entry["silent"] === true,
-      "label": String(entry["label"] || cls)
+      "label": String(entry["label"] || cls),
+      // Sticky: set once a real window has been seen using this class. Without
+      // persisting it, closing the app would demote a confirmed rule back to a
+      // guess and wrongly flag it as one that can never fire.
+      "verified": entry["verified"] === true
     })
   }
   state.rules = sorted(state.rules)
@@ -56,6 +65,15 @@ function normalize(raw) {
       // A workspace with neither a monitor nor persistence carries no rule.
       if (entry["monitor"].length === 0 && !entry["persistent"]) continue
       state.workspaces[name] = entry
+    }
+  }
+
+  var alias_map = raw.aliases
+  if (alias_map && typeof alias_map === "object") {
+    for (var from in alias_map) {
+      var to = String(alias_map[from] || "")
+      if (String(from).length === 0 || to.length === 0 || String(from) === to) continue
+      state.aliases[String(from)] = to
     }
   }
 
@@ -82,6 +100,7 @@ function cloneState(state) {
     var entry = state.workspaces[key]
     out.workspaces[key] = { "monitor": entry["monitor"], "persistent": entry["persistent"] }
   }
+  for (var from in state.aliases) out.aliases[from] = state.aliases[from]
   return out
 }
 
@@ -104,20 +123,72 @@ function findCI(rules, cls) {
   return null
 }
 
-function upsert(state, cls, workspace, silent, label) {
+function upsert(state, cls, workspace, silent, label, verified) {
   var next = cloneState(state)
   var needle = String(cls).toLowerCase()
+  var wasVerified = false
   var kept = []
-  for (var i = 0; i < next.rules.length; i++)
-    if (next.rules[i]["class"].toLowerCase() !== needle) kept.push(next.rules[i])
+  for (var i = 0; i < next.rules.length; i++) {
+    if (next.rules[i]["class"].toLowerCase() === needle) {
+      wasVerified = next.rules[i]["verified"] === true
+      continue
+    }
+    kept.push(next.rules[i])
+  }
   kept.push({
     "class": String(cls),
     "workspace": String(workspace),
     "silent": silent === true,
-    "label": String(label || cls)
+    "label": String(label || cls),
+    // Confirmation never regresses: editing a rule cannot un-verify a class a
+    // real window already proved.
+    "verified": verified === true || wasVerified
   })
   next.rules = sorted(kept)
   return next
+}
+
+function markVerified(state, cls) {
+  var needle = String(cls).toLowerCase()
+  var changed = false
+  var next = cloneState(state)
+  var out = []
+  for (var i = 0; i < next.rules.length; i++) {
+    var rule = next.rules[i]
+    if (rule["class"].toLowerCase() === needle && rule["verified"] !== true) {
+      rule = {
+        "class": rule["class"], "workspace": rule["workspace"],
+        "silent": rule["silent"], "label": rule["label"], "verified": true
+      }
+      changed = true
+    }
+    out.push(rule)
+  }
+  next.rules = out
+  return changed ? next : null
+}
+
+function isVerified(state, cls) {
+  var rule = findCI(state.rules, cls)
+  return !!rule && rule["verified"] === true
+}
+
+// Records that a guessed class really opens as another one. Returns null when
+// nothing changed, so callers can skip a pointless write.
+function putAlias(state, from, to) {
+  var source = String(from || "")
+  var target = String(to || "")
+  if (source.length === 0 || target.length === 0 || source === target) return null
+  if (state.aliases[source] === target) return null
+  var next = cloneState(state)
+  next.aliases[source] = target
+  return next
+}
+
+function resolveAlias(state, cls) {
+  var value = String(cls || "")
+  var mapped = state.aliases[value]
+  return mapped ? String(mapped) : value
 }
 
 function remove(state, cls) {
@@ -177,7 +248,8 @@ function toJson(state) {
   return JSON.stringify({
     "version": SCHEMA_VERSION,
     "rules": state.rules,
-    "workspaces": state.workspaces
+    "workspaces": state.workspaces,
+    "aliases": state.aliases
   }, null, 2) + "\n"
 }
 
@@ -312,6 +384,10 @@ if (typeof module !== "undefined") {
     normalize: normalize,
     find: find,
     findCI: findCI,
+    markVerified: markVerified,
+    isVerified: isVerified,
+    putAlias: putAlias,
+    resolveAlias: resolveAlias,
     upsert: upsert,
     remove: remove,
     workspaceEntry: workspaceEntry,

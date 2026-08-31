@@ -41,6 +41,12 @@ Panel {
   property string status: ""
   property bool statusError: false
 
+  // pid -> Steam app id, read from the running processes' environment. This is
+  // the only reliable bridge between a Steam .desktop entry and the window the
+  // game actually opens: Factorio's launcher says rungameid/427520 while its
+  // window is "com.factorio.Factorio".
+  property var steamPids: ({})
+
   // The bar sizes each widget from its root implicitWidth/Height. Without
   // these the slot collapses to 0x0 and the icon never appears on the bar.
   implicitWidth: button.implicitWidth
@@ -156,6 +162,8 @@ Panel {
   function rebuild() {
     var byClass = ({})
     var order = []
+    var learned = []
+    var confirm = []
 
     // Keyed case-insensitively. A .desktop file can declare a different case
     // than the window actually uses (brave-browser vs Brave-browser); keying
@@ -183,6 +191,14 @@ Panel {
       if (cls.length === 0) continue
       var wsName = ""
       try { wsName = top.workspace ? String(top.workspace.name) : "" } catch (e) { wsName = "" }
+
+      // A live window is proof: remember the class so the rule stays confirmed
+      // after the app closes.
+      if (Rules.findCI(root.state.rules, cls) && !Rules.isVerified(root.state, cls)) confirm.push(cls)
+
+      var appId = root.steamPids[String(ipc["pid"] || "")]
+      if (appId) learned.push({ from: "steam_app_" + appId, to: cls })
+
       put({
         cls: cls,
         name: cls,
@@ -200,7 +216,10 @@ Panel {
       var entry = entries[j]
       if (!entry || entry.noDisplay === true) continue
       var declared = String(entry.startupClass || "")
-      var guessed = Rules.classFromEntry(declared, entry.execString, entry.id)
+      var derived = Rules.classFromEntry(declared, entry.execString, entry.id)
+      // A learned alias replaces the guess outright, which is what collapses a
+      // Steam game's launcher entry and its real window into one row.
+      var guessed = Rules.resolveAlias(root.state, derived)
       if (guessed.length === 0) continue
 
       var row = put({
@@ -208,7 +227,7 @@ Panel {
         name: String(entry.name || guessed),
         icon: root.iconSource(entry.icon),
         running: false,
-        verified: declared.length > 0,
+        verified: guessed !== derived || (declared.length > 0 && declared === guessed),
         address: "",
         ws: ""
       })
@@ -228,11 +247,11 @@ Panel {
         name: rule["label"],
         icon: "",
         running: false,
-        verified: false,
+        verified: rule["verified"] === true,
         // Nothing on this system uses this class: no window, no desktop entry.
         // The rule can never fire, so the detail pane says so out loud instead
         // of leaving it to look like every other unlaunched app.
-        orphan: true,
+        orphan: rule["verified"] !== true,
         address: "",
         ws: ""
       })
@@ -242,6 +261,7 @@ Panel {
     for (var n = 0; n < order.length; n++) {
       var item = byClass[order[n]]
       item.rule = Rules.findCI(root.state.rules, item.cls)
+      if (item.rule && item.rule["verified"] === true) item.verified = true
       apps.push(item)
     }
 
@@ -261,6 +281,31 @@ Panel {
 
     root.rows = out
     if (!root.rowForKey(root.selectedKey)) root.selectKey(out.length > 0 ? out[0].cls : "")
+
+    root.rememberFindings(learned, confirm)
+  }
+
+  // Aliases and confirmations are bookkeeping: they change nothing Hyprland
+  // reads, so they go straight to rules.json with no reload and no rollback
+  // dance. Writing only when something actually changed keeps the FileView
+  // watch from bouncing.
+  function rememberFindings(learned, confirm) {
+    if (root.applying) return
+    var next = root.state
+    var changed = false
+
+    for (var i = 0; i < learned.length; i++) {
+      var aliased = Rules.putAlias(next, learned[i].from, learned[i].to)
+      if (aliased) { next = aliased; changed = true }
+    }
+    for (var j = 0; j < confirm.length; j++) {
+      var marked = Rules.markVerified(next, confirm[j])
+      if (marked) { next = marked; changed = true }
+    }
+
+    if (!changed) return
+    root.state = next
+    rulesFile.setText(Rules.toJson(next))
   }
 
   function rowForKey(key) {
@@ -301,7 +346,8 @@ Panel {
     var row = root.selectedRow
     if (!row) return
     var next = Rules.upsert(root.state, row.cls, String(workspace),
-                            row.rule ? row.rule["silent"] === true : false, row.cls)
+                            row.rule ? row.rule["silent"] === true : false, row.cls,
+                            row.verified === true)
     root.apply(next, row.running ? row.address : "", String(workspace),
                row.cls + " → workspace " + workspace)
   }
@@ -310,7 +356,8 @@ Panel {
     var row = root.selectedRow
     if (!row || !row.rule) return
     var quiet = !(row.rule["silent"] === true)
-    var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.cls)
+    var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.cls,
+                            row.verified === true)
     root.apply(next, "", "", row.cls + (quiet ? " → silent" : " → follow focus"))
   }
 
@@ -433,6 +480,7 @@ Panel {
 
   function refresh() {
     try { Hyprland.refreshToplevels() } catch (e) {}
+    if (!steamProbe.running) steamProbe.running = true
     root.rebuild()
   }
 
@@ -482,6 +530,27 @@ Panel {
   Process {
     id: evalProc
     command: ["hyprctl", "eval", ""]
+  }
+
+  Process {
+    id: steamProbe
+    command: ["sh", "-c",
+      "for p in /proc/[0-9]*; do " +
+      "id=$(tr '\\0' '\\n' < \"$p/environ\" 2>/dev/null | sed -n 's/^SteamAppId=//p' | head -1); " +
+      "[ -n \"$id\" ] && echo \"${p#/proc/} $id\"; done"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var map = ({})
+        var lines = String(text || "").split("\n")
+        for (var i = 0; i < lines.length; i++) {
+          var parts = lines[i].trim().split(" ")
+          if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) map[parts[0]] = parts[1]
+        }
+        root.steamPids = map
+        root.rebuild()
+      }
+    }
   }
 
   Timer {
