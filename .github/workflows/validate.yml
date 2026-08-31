@@ -1,0 +1,25 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Lua (the model test compiles its generated output)
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - run: node --test tests/model.test.js
+      - name: Manifest must stay valid JSON with the fields the shell requires
+        run: |
+          jq -e '.schemaVersion == 1' manifest.json
+          jq -e 'has("id") and has("name") and has("version") and has("kinds") and has("entryPoints")' manifest.json
+          test -f "$(jq -r '.entryPoints.barWidget' manifest.json)"

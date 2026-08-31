@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "zabka.appws",
+  "name": "App workspaces",
+  "version": "0.2.0",
+  "author": "Dominik Zajac",
+  "license": "MIT",
+  "description": "Assign applications to workspaces, and workspaces to monitors, without hand-editing the Hyprland config.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "App workspaces",
+    "description": "Pin apps to workspaces and workspaces to monitors.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

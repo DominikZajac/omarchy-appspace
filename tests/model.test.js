@@ -1,0 +1,152 @@
+const test = require("node:test")
+const assert = require("node:assert/strict")
+const childProcess = require("node:child_process")
+const fs = require("node:fs")
+const path = require("node:path")
+const Rules = require("../Rules.js")
+
+test("a schema 1 file, which had no workspaces section, loads as an empty map", () => {
+  const state = Rules.normalize({ version: 1, rules: [{ class: "vesktop", workspace: "3" }] })
+  assert.equal(state.rules.length, 1)
+  assert.deepEqual(state.workspaces, {})
+})
+
+test("a schema 2 file, which stored a bare monitor string, loads as a workspace entry", () => {
+  const state = Rules.normalize({
+    version: 2,
+    rules: [],
+    workspaces: { "3": "desc:LG Electronics MP59G" }
+  })
+  assert.deepEqual(state.workspaces["3"], { monitor: "desc:LG Electronics MP59G", persistent: false })
+})
+
+test("a workspace with neither a monitor nor persistence carries no rule and is dropped", () => {
+  const state = Rules.normalize({
+    version: 3,
+    rules: [],
+    workspaces: { "4": { monitor: "", persistent: false } }
+  })
+  assert.deepEqual(state.workspaces, {})
+
+  const cleared = Rules.setWorkspacePersistent(
+    Rules.setWorkspaceMonitor(Rules.emptyState(), "4", "desc:X"), "4", false)
+  assert.equal(Rules.workspaceMonitor(cleared, "4"), "desc:X")
+  assert.deepEqual(Rules.setWorkspaceMonitor(cleared, "4", "").workspaces, {})
+})
+
+test("setting a monitor keeps persistence and vice versa", () => {
+  let state = Rules.setWorkspacePersistent(Rules.emptyState(), "6", true)
+  state = Rules.setWorkspaceMonitor(state, "6", "desc:Samsung")
+  assert.deepEqual(Rules.workspaceEntry(state, "6"), { monitor: "desc:Samsung", persistent: true })
+})
+
+// The bug this guards: brave-browser.desktop declares StartupWMClass
+// "brave-browser" while the window class is "Brave-browser". Treating those as
+// two apps produced two rows and a rule that never matched anything.
+test("rules are replaced case-insensitively, and the newest spelling is stored", () => {
+  let state = Rules.normalize({ rules: [{ class: "brave-browser", workspace: "1" }] })
+  assert.ok(Rules.findCI(state.rules, "Brave-browser"))
+  assert.equal(Rules.find(state.rules, "Brave-browser"), null)
+
+  state = Rules.upsert(state, "Brave-browser", "2", false, "Brave-browser")
+  assert.equal(state.rules.length, 1)
+  assert.equal(state.rules[0]["class"], "Brave-browser")
+  assert.equal(state.rules[0]["workspace"], "2")
+
+  assert.equal(Rules.remove(state, "BRAVE-BROWSER").rules.length, 0)
+})
+
+test("class patterns are anchored and regex-escaped so one app cannot match another", () => {
+  assert.equal(Rules.classPattern("foot"), "^foot$")
+  assert.equal(Rules.classPattern("org.gnome.Files"), "^org\\.gnome\\.Files$")
+})
+
+test("Lua strings escape quotes and backslashes", () => {
+  assert.equal(Rules.luaString('we"ird\\class'), '"we\\"ird\\\\class"')
+})
+
+test("generated Lua carries window rules, workspace rules and a guard", () => {
+  let state = Rules.normalize({ rules: [{ class: "vesktop", workspace: "3", silent: true }] })
+  state = Rules.setWorkspaceMonitor(state, "3", "desc:LG")
+  state = Rules.setWorkspacePersistent(state, "6", true)
+  const lua = Rules.toLua(state)
+
+  assert.match(lua, /if type\(hl\) ~= "table" or type\(o\) ~= "table" then return end/)
+  assert.match(lua, /hl\.workspace_rule\(\{ workspace = "3", monitor = "desc:LG" \}\)/)
+  assert.match(lua, /hl\.workspace_rule\(\{ workspace = "6", persistent = true \}\)/)
+  assert.match(lua, /o\.window\("\^vesktop\$", \{ workspace = "3 silent" \}\)/)
+})
+
+test("generated Lua is syntactically valid", (t) => {
+  let luac
+  try {
+    luac = childProcess.execFileSync("sh", ["-c", "command -v luac"], { encoding: "utf8" }).trim()
+  } catch (e) {
+    return t.skip("luac not installed")
+  }
+  let state = Rules.normalize({ rules: [{ class: 'we"ird\\class', workspace: "9" }] })
+  state = Rules.setWorkspaceMonitor(state, "9", 'desc:Odd "Monitor" \\ Name')
+  const file = path.join(fs.mkdtempSync("/tmp/appws-"), "generated.lua")
+  fs.writeFileSync(file, Rules.toLua(state))
+  childProcess.execFileSync(luac, ["-p", file])
+})
+
+// Hyprland silently ignores unknown keys in this dispatcher and falls back to
+// the ACTIVE window, so a wrong key would move whatever the user is looking at.
+test("the move dispatcher names the window explicitly and does not follow it", () => {
+  const lua = Rules.moveWindowLua("0xdeadbeef", "3")
+  assert.match(lua, /window = "address:0xdeadbeef"/)
+  assert.match(lua, /follow = false/)
+})
+
+test("a desktop id falls back to a class only after stripping path and suffix", () => {
+  assert.equal(Rules.classFromDesktopId("steam.desktop"), "steam")
+  assert.equal(Rules.classFromDesktopId("/usr/share/applications/org.x.y.desktop"), "org.x.y")
+  assert.equal(Rules.classFromDesktopId(""), "")
+})
+
+test("a workspace can be read back from the rule side", () => {
+  let state = Rules.normalize({
+    rules: [
+      { class: "vesktop", workspace: "3" },
+      { class: "spotify", workspace: "3" },
+      { class: "foot", workspace: "5" }
+    ]
+  })
+  assert.deepEqual(Rules.rulesForWorkspace(state, "3").map(r => r["class"]), ["spotify", "vesktop"])
+  assert.deepEqual(Rules.rulesForWorkspace(state, "9"), [])
+})
+
+test("the round trip through JSON preserves both rule kinds", () => {
+  let state = Rules.setWorkspacePersistent(
+    Rules.upsert(Rules.emptyState(), "vesktop", "3", true, "vesktop"), "3", true)
+  const reloaded = Rules.normalize(JSON.parse(Rules.toJson(state)))
+  assert.deepEqual(reloaded, state)
+})
+
+test("the panel does not reference model internals the model no longer exports", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  // Call sites only — the `import "Rules.js" as Rules` line is not one.
+  const used = new Set([...qml.matchAll(/\bRules\.(\w+)\s*\(/g)].map(m => m[1]))
+  for (const name of used) assert.ok(name in Rules, `Panel.qml calls Rules.${name}, which is not exported`)
+})
+
+// Steam ships one .desktop per game with no StartupWMClass and a launcher Exec,
+// so the filename fallback would produce "Factorio" for a window that is really
+// "steam_app_427520" — a rule that silently never matches.
+test("a Steam game resolves to its steam_app class rather than its display name", () => {
+  assert.equal(
+    Rules.classFromEntry("", "steam steam://rungameid/427520", "Factorio.desktop"),
+    "steam_app_427520")
+  assert.equal(
+    Rules.classFromEntry("", "steam steam://rungameid/2868840", "Slay the Spire 2.desktop"),
+    "steam_app_2868840")
+})
+
+test("a declared StartupWMClass still wins over every fallback", () => {
+  assert.equal(Rules.classFromEntry("vesktop", "steam steam://rungameid/1", "x.desktop"), "vesktop")
+})
+
+test("a normal launcher entry keeps falling back to its desktop id", () => {
+  assert.equal(Rules.classFromEntry("", "/usr/bin/foot", "foot.desktop"), "foot")
+})
