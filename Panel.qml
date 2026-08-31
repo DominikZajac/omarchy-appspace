@@ -205,6 +205,7 @@ Panel {
         icon: "",
         running: true,
         verified: true,
+        command: "",
         address: String(top.address || ""),
         ws: wsName
       })
@@ -228,6 +229,7 @@ Panel {
         icon: root.iconSource(entry.icon),
         running: false,
         verified: guessed !== derived || (declared.length > 0 && declared === guessed),
+        command: Rules.launchTarget(entry.id, entry.command),
         address: "",
         ws: ""
       })
@@ -236,6 +238,9 @@ Panel {
       if (row.running) {
         row.name = String(entry.name || row.name)
         if (!row.icon) row.icon = root.iconSource(entry.icon)
+        // A running window has no command of its own; the desktop entry is the
+        // only place a launch line can come from.
+        if (!row.command) row.command = Rules.launchTarget(entry.id, entry.command)
       }
     }
 
@@ -248,6 +253,7 @@ Panel {
         icon: "",
         running: false,
         verified: rule["verified"] === true,
+        command: String(rule["command"] || ""),
         // Nothing on this system uses this class: no window, no desktop entry.
         // The rule can never fire, so the detail pane says so out loud instead
         // of leaving it to look like every other unlaunched app.
@@ -262,6 +268,7 @@ Panel {
       var item = byClass[order[n]]
       item.rule = Rules.findCI(root.state.rules, item.cls)
       if (item.rule && item.rule["verified"] === true) item.verified = true
+      if (!item.command && item.rule) item.command = String(item.rule["command"] || "")
       apps.push(item)
     }
 
@@ -347,7 +354,7 @@ Panel {
     if (!row) return
     var next = Rules.upsert(root.state, row.cls, String(workspace),
                             row.rule ? row.rule["silent"] === true : false, row.cls,
-                            row.verified === true)
+                            row.verified === true, row.command)
     root.apply(next, row.running ? row.address : "", String(workspace),
                row.cls + " → workspace " + workspace)
   }
@@ -357,8 +364,20 @@ Panel {
     if (!row || !row.rule) return
     var quiet = !(row.rule["silent"] === true)
     var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.cls,
-                            row.verified === true)
+                            row.verified === true, row.command)
     root.apply(next, "", "", row.cls + (quiet ? " → silent" : " → follow focus"))
+  }
+
+  function toggleAutostart() {
+    var row = root.selectedRow
+    if (!row || !row.rule) return
+    // The row knows the desktop entry's command even when the rule predates
+    // command storage, so pass it along instead of refusing the toggle.
+    var command = String(row.command || "")
+    if (command.length === 0) return
+    var on = !Rules.isAutostart(root.state, row.cls)
+    root.apply(Rules.setAutostart(root.state, row.cls, on, command), "", "",
+               row.cls + (on ? " → launches at startup" : " → no longer launches at startup"))
   }
 
   function removeRule() {
@@ -576,6 +595,22 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+
+    function autostart(cls: string, state: string): string {
+      var name = String(cls || "")
+      if (!name.length) return "usage: autostart <class> <on|off>"
+      if (root.applying) return "busy"
+      var rule = Rules.findCI(root.state.rules, name)
+      if (!rule) return "no rule for " + name
+      var on = String(state || "").toLowerCase() === "on"
+      var row = root.rowForKey(rule["class"])
+      var command = row ? String(row.command || "") : ""
+      if (on && command.length === 0 && !Rules.canAutostart(root.state, rule["class"]))
+        return "no launch command known for " + name
+      root.apply(Rules.setAutostart(root.state, rule["class"], on, command), "", "",
+                 rule["class"] + (on ? " → launches at startup" : " → no longer launches at startup"))
+      return "ok"
+    }
 
     function persist(workspace: string, state: string): string {
       var ws = String(workspace || "")
@@ -994,29 +1029,53 @@ Panel {
               visible: root.selectedRow && !!root.selectedRow.rule
             }
 
-            Row {
+            Toggle {
               width: parent.width
-              spacing: Style.space(10)
               visible: root.selectedRow && !!root.selectedRow.rule
+              label: "Silent"
+              description: "Opens there without pulling focus"
+              checked: root.selectedRow && root.selectedRow.rule
+                ? root.selectedRow.rule["silent"] === true : false
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.toggleSilent()
+            }
 
-              Toggle {
-                width: Math.max(Style.space(160), parent.width - removeButton.width - parent.spacing)
-                label: "Silent"
-                description: "Opens there without pulling focus"
-                checked: root.selectedRow && root.selectedRow.rule
-                  ? root.selectedRow.rule["silent"] === true : false
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.toggleSilent()
-              }
+            Toggle {
+              readonly property bool launchable: root.selectedRow
+                && String(root.selectedRow.command || "").length > 0
+
+              width: parent.width
+              visible: root.selectedRow && !!root.selectedRow.rule
+              label: "Launch at startup"
+              description: launchable
+                ? "Started with the session, straight onto its workspace"
+                : "Unavailable: no desktop entry to launch this class from"
+              checked: root.selectedRow && Rules.isAutostart(root.state, root.selectedRow.cls)
+              // Without a command there is nothing to put in the launch line,
+              // so the row stays visible but inert rather than silently no-op.
+              enabled: launchable
+              opacity: launchable ? 1 : 0.45
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.toggleAutostart()
+            }
+
+            Item {
+              width: parent.width
+              height: removeButton.implicitHeight
+              visible: root.selectedRow && !!root.selectedRow.rule
 
               Button {
                 id: removeButton
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: parent.right
                 text: "Remove rule"
                 bordered: true
                 focusable: true
-                foreground: root.foreground
+                // Color.urgent is the palette's red, the same one ConfirmDialog
+                // paints destructive choices with.
+                foreground: Color.urgent
+                accent: Color.urgent
                 fontFamily: root.fontFamily
                 onClicked: root.removeRule()
               }

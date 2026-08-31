@@ -4,7 +4,7 @@
 // Nothing here touches QML or the filesystem, so it can be tested standalone
 // and a parsing mistake cannot take the bar down with it.
 
-var SCHEMA_VERSION = 4
+var SCHEMA_VERSION = 5
 
 // ------------------------------------------------------------------ state
 //
@@ -42,7 +42,13 @@ function normalize(raw) {
       // Sticky: set once a real window has been seen using this class. Without
       // persisting it, closing the app would demote a confirmed rule back to a
       // guess and wrongly flag it as one that can never fire.
-      "verified": entry["verified"] === true
+      "verified": entry["verified"] === true,
+      // Autostart rides along on the rule rather than living in its own list:
+      // an app you never place is not one you want launched into nowhere.
+      "autostart": entry["autostart"] === true,
+      // Kept even when autostart is off, so toggling it back on does not
+      // require the desktop entry to still be around.
+      "command": String(entry["command"] || "")
     })
   }
   state.rules = sorted(state.rules)
@@ -123,18 +129,19 @@ function findCI(rules, cls) {
   return null
 }
 
-function upsert(state, cls, workspace, silent, label, verified) {
+function upsert(state, cls, workspace, silent, label, verified, command) {
   var next = cloneState(state)
   var needle = String(cls).toLowerCase()
-  var wasVerified = false
+  var previous = null
   var kept = []
   for (var i = 0; i < next.rules.length; i++) {
     if (next.rules[i]["class"].toLowerCase() === needle) {
-      wasVerified = next.rules[i]["verified"] === true
+      previous = next.rules[i]
       continue
     }
     kept.push(next.rules[i])
   }
+  var supplied = String(command || "")
   kept.push({
     "class": String(cls),
     "workspace": String(workspace),
@@ -142,10 +149,75 @@ function upsert(state, cls, workspace, silent, label, verified) {
     "label": String(label || cls),
     // Confirmation never regresses: editing a rule cannot un-verify a class a
     // real window already proved.
-    "verified": verified === true || wasVerified
+    "verified": verified === true || (!!previous && previous["verified"] === true),
+    "autostart": !!previous && previous["autostart"] === true,
+    "command": supplied.length > 0 ? supplied : (previous ? previous["command"] : "")
   })
   next.rules = sorted(kept)
   return next
+}
+
+// Autostart needs a command; a rule created from a window with no desktop entry
+// has none, and turning it on would generate a launch line that does nothing.
+function canAutostart(state, cls) {
+  var rule = findCI(state.rules, cls)
+  return !!rule && String(rule["command"] || "").length > 0
+}
+
+function isAutostart(state, cls) {
+  var rule = findCI(state.rules, cls)
+  return !!rule && rule["autostart"] === true
+}
+
+// Takes the command as well: a rule written before commands were recorded has
+// none stored, and the caller knows the desktop entry it is looking at.
+function setAutostart(state, cls, on, command) {
+  var needle = String(cls).toLowerCase()
+  var supplied = String(command || "")
+  var next = cloneState(state)
+  var out = []
+  for (var i = 0; i < next.rules.length; i++) {
+    var rule = next.rules[i]
+    if (rule["class"].toLowerCase() === needle) {
+      var existing = String(rule["command"] || "")
+      rule = {
+        "class": rule["class"], "workspace": rule["workspace"], "silent": rule["silent"],
+        "label": rule["label"], "verified": rule["verified"],
+        "autostart": on === true,
+        "command": supplied.length > 0 ? supplied : existing
+      }
+    }
+    out.push(rule)
+  }
+  next.rules = out
+  return next
+}
+
+// Quickshell hands over an argv array with the .desktop field codes already
+// resolved. Quote only what a shell would otherwise mangle, so the generated
+// Lua stays readable for the common `spotify` case.
+// What goes into the launch line. `uwsm-app`, which o.launch() wraps around,
+// resolves a Desktop Entry ID directly — which handles field codes properly and
+// names the systemd unit after the app. Passing the resolved argv instead would
+// carry artefacts like the empty `--uri=` left behind by Spotify's `%u`.
+function launchTarget(entryId, parts) {
+  var id = String(entryId || "")
+  if (id.length > 0)
+    return id.substring(id.length - 8) === ".desktop" ? id : id + ".desktop"
+  return shellCommand(parts)
+}
+
+function shellCommand(parts) {
+  if (typeof parts === "string") return parts
+  if (!parts || !parts.length) return ""
+  var out = []
+  for (var i = 0; i < parts.length; i++) {
+    var token = String(parts[i])
+    if (token.length === 0) { out.push("''"); continue }
+    if (/^[A-Za-z0-9_.:\/=@%+-]+$/.test(token)) out.push(token)
+    else out.push("'" + token.split("'").join("'\\''") + "'")
+  }
+  return out.join(" ")
 }
 
 function markVerified(state, cls) {
@@ -156,9 +228,12 @@ function markVerified(state, cls) {
   for (var i = 0; i < next.rules.length; i++) {
     var rule = next.rules[i]
     if (rule["class"].toLowerCase() === needle && rule["verified"] !== true) {
+      // Copy every field: rebuilding from a subset silently dropped autostart
+      // and its command, so confirming a class wiped the launch setting.
       rule = {
         "class": rule["class"], "workspace": rule["workspace"],
-        "silent": rule["silent"], "label": rule["label"], "verified": true
+        "silent": rule["silent"], "label": rule["label"], "verified": true,
+        "autostart": rule["autostart"] === true, "command": String(rule["command"] || "")
       }
       changed = true
     }
@@ -325,6 +400,27 @@ function toLua(state) {
       + ", { workspace = " + luaString(target) + " })"
       + "  -- " + rule["label"])
   }
+  var launched = []
+  for (var k = 0; k < state.rules.length; k++) {
+    var candidate = state.rules[k]
+    if (candidate["autostart"] !== true) continue
+    if (String(candidate["command"] || "").length === 0) continue
+    launched.push(candidate)
+  }
+
+  if (launched.length > 0) {
+    lines.push("")
+    lines.push("-- Launch with the session")
+    // Older Omarchy builds may not carry this helper; a missing one must not
+    // take the whole config down with it.
+    lines.push("if type(o.launch_on_start) == \"function\" then")
+    for (var m = 0; m < launched.length; m++) {
+      lines.push("  o.launch_on_start(" + luaString(launched[m]["command"] + "")
+        + ")  -- " + launched[m]["label"])
+    }
+    lines.push("end")
+  }
+
   lines.push("")
   return lines.join("\n")
 }
@@ -385,6 +481,11 @@ if (typeof module !== "undefined") {
     find: find,
     findCI: findCI,
     markVerified: markVerified,
+    canAutostart: canAutostart,
+    isAutostart: isAutostart,
+    setAutostart: setAutostart,
+    shellCommand: shellCommand,
+    launchTarget: launchTarget,
     isVerified: isVerified,
     putAlias: putAlias,
     resolveAlias: resolveAlias,

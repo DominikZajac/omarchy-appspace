@@ -12,8 +12,8 @@ and if the app is already running its window moves there immediately.
 ## Two views
 
 **Apps** — every running window and every installed application, searchable.
-A dot marks what is currently running. Assign a workspace, toggle *Silent*,
-remove the rule.
+A dot marks what is currently running. Assign a workspace, toggle *Silent* and
+*Launch at startup*, remove the rule.
 
 **Workspaces** — one row per workspace: which monitor it lives on, which apps are
 pinned to it, and whether it is always present. `+ Add workspace` creates the next
@@ -51,6 +51,15 @@ row from then on.
 
 Monitors are matched by `desc:` (make, model and serial), not by connector, so
 moving a cable to another port keeps the layout.
+
+*Launch at startup* rides on the rule, so an app is only launched into a
+workspace you have already chosen for it. The generated Lua registers it through
+`o.launch_on_start`, which hooks Hyprland's `hyprland.start` event — a config
+reload does not re-fire it, so reloading never relaunches your apps. The launch
+target is the Desktop Entry ID rather than a resolved command line, because
+`uwsm-app` resolves entries itself and gets the `.desktop` field codes right. An
+app with no desktop entry has nothing to launch, so the toggle stays inert for
+it.
 
 ## Install
 
@@ -95,6 +104,7 @@ omarchy-shell dominikzajac.appws unset spotify
 omarchy-shell dominikzajac.appws pin 3 "LG Electronics MP59G 0x01010101"
 omarchy-shell dominikzajac.appws pin 3 ""                 # back to auto
 omarchy-shell dominikzajac.appws persist 6 on             # always-present workspace
+omarchy-shell dominikzajac.appws autostart spotify on    # launch with the session
 omarchy-shell dominikzajac.appws view workspaces
 omarchy-shell dominikzajac.appws select vesktop
 ```
@@ -133,5 +143,5 @@ change. Reverting both files matters too — restoring only the Lua would leave
 | `manifest.json` | plugin manifest |
 | `Panel.qml` | bar widget, both views, write pipeline |
 | `Rules.js` | model, JSON ↔ Lua serialization — no QML, no filesystem |
-| `~/.local/state/omarchy/appws/rules.json` | source of truth (schema 4) |
+| `~/.local/state/omarchy/appws/rules.json` | source of truth (schema 5) |
 | `~/.config/hypr/appws.lua` | generated, overwritten in full |

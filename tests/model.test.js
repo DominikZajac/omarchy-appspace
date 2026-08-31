@@ -198,3 +198,69 @@ test("a schema 3 file loads with no aliases and nothing confirmed", () => {
   assert.deepEqual(state.aliases, {})
   assert.equal(state.rules[0]["verified"], false)
 })
+
+test("a schema 4 file loads with autostart off and no command", () => {
+  const state = Rules.normalize({ version: 4, rules: [{ class: "foot", workspace: "1" }] })
+  assert.equal(state.rules[0]["autostart"], false)
+  assert.equal(state.rules[0]["command"], "")
+})
+
+// uwsm-app resolves a Desktop Entry ID itself, which handles field codes the way
+// the spec says. Spotify's `Exec=spotify --uri=%u` otherwise resolves to an
+// argv carrying a stray empty `--uri=`.
+test("the launch target is the desktop entry, with argv only as a fallback", () => {
+  assert.equal(Rules.launchTarget("spotify", []), "spotify.desktop")
+  assert.equal(Rules.launchTarget("spotify.desktop", []), "spotify.desktop")
+  assert.equal(Rules.launchTarget("", ["spotify", "--uri="]), "spotify --uri=")
+  assert.equal(Rules.launchTarget("", []), "")
+})
+
+test("argv is quoted only where a shell would mangle it", () => {
+  assert.equal(Rules.shellCommand(["spotify"]), "spotify")
+  assert.equal(Rules.shellCommand(["/opt/My App/run", "--flag", "a b"]), "'/opt/My App/run' --flag 'a b'")
+  assert.equal(Rules.shellCommand(["it's"]), "'it'\\''s'")
+  assert.equal(Rules.shellCommand("already a string"), "already a string")
+})
+
+test("autostart needs a command, is remembered, and survives editing the rule", () => {
+  let state = Rules.upsert(Rules.emptyState(), "spotify", "4", true, "spotify", true)
+  assert.equal(Rules.canAutostart(state, "spotify"), false, "no command yet")
+
+  state = Rules.setAutostart(state, "spotify", true, "spotify.desktop")
+  assert.equal(Rules.isAutostart(state, "spotify"), true)
+  assert.equal(Rules.canAutostart(state, "spotify"), true)
+
+  state = Rules.upsert(state, "spotify", "5", false, "spotify")
+  assert.equal(Rules.isAutostart(state, "spotify"), true, "moving the app must not unset autostart")
+  assert.equal(state.rules[0]["command"], "spotify.desktop", "the command is kept")
+
+  state = Rules.setAutostart(state, "spotify", false)
+  assert.equal(Rules.isAutostart(state, "spotify"), false)
+  assert.equal(Rules.canAutostart(state, "spotify"), true, "turning it off keeps the command")
+})
+
+test("the launch block is guarded and skips rules with nothing to launch", () => {
+  let state = Rules.upsert(Rules.emptyState(), "foot", "1", false, "foot")
+  state = Rules.setAutostart(state, "foot", true)
+  assert.ok(!/launch_on_start/.test(Rules.toLua(state)), "no command means no launch line")
+
+  state = Rules.setAutostart(state, "foot", true, "foot.desktop")
+  const lua = Rules.toLua(state)
+  assert.match(lua, /if type\(o\.launch_on_start\) == "function" then/)
+  assert.match(lua, /o\.launch_on_start\("foot\.desktop"\)/)
+})
+
+// Regression: markVerified rebuilt the rule from a subset of its fields, so
+// confirming a class silently dropped autostart and the command with it.
+test("confirming a class keeps every other setting on the rule", () => {
+  let state = Rules.setAutostart(
+    Rules.upsert(Rules.emptyState(), "spotify", "4", true, "spotify"), "spotify", true, "spotify.desktop")
+  state = Rules.markVerified(state, "spotify")
+
+  const rule = Rules.find(state.rules, "spotify")
+  assert.equal(rule["verified"], true)
+  assert.equal(rule["autostart"], true)
+  assert.equal(rule["command"], "spotify.desktop")
+  assert.equal(rule["silent"], true)
+  assert.equal(rule["workspace"], "4")
+})
