@@ -778,7 +778,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "\u{F0570}"
+    text: "\u{F0A07}"
     tooltipText: "AppSpace"
     onPressed: root.toggle()
   }
@@ -839,7 +839,7 @@ Panel {
 
           iconComponent: Component {
             Text {
-              text: "\u{F0570}"
+              text: "\u{F0A07}"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
