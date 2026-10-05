@@ -580,10 +580,15 @@ Panel {
   }
 
   // FileView does not create directories, and on a fresh install
-  // ~/.local/state/omarchy/appws/ does not exist yet.
+  // ~/.local/state/omarchy/appws/ does not exist yet. The Lua module is seeded
+  // as well — with the same output an empty rule set generates — so the
+  // `require("hypr.appws")` line can go into hyprland.lua straight after
+  // enabling the plugin, without Hyprland first reporting a missing module.
   Process {
     id: bootstrapProc
-    command: ["mkdir", "-p", root.home + "/.local/state/omarchy/appws"]
+    command: ["sh", "-c", "mkdir -p \"$1\"; [ -e \"$2\" ] || printf '%s' \"$3\" > \"$2\"",
+      "sh", root.home + "/.local/state/omarchy/appws", root.luaPath,
+      Rules.toLua(Rules.emptyState())]
     running: true
   }
 
