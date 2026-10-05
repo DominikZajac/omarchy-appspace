@@ -264,3 +264,29 @@ test("confirming a class keeps every other setting on the rule", () => {
   assert.equal(rule["silent"], true)
   assert.equal(rule["workspace"], "4")
 })
+
+// Arch's chromium.desktop declares StartupWMClass=@@startup_wm_class, an
+// unfilled build placeholder. Trusting it wrote a verified rule for a class
+// that no window carries, while the real window is plainly "chromium".
+test("a placeholder StartupWMClass is ignored in favour of the desktop id", () => {
+  assert.equal(Rules.declaredClass("@@startup_wm_class"), "")
+  assert.equal(Rules.declaredClass("  "), "")
+  assert.equal(Rules.declaredClass("has space"), "")
+  assert.equal(Rules.declaredClass("Brave-browser"), "Brave-browser")
+  assert.equal(Rules.declaredClass("org.gnome.Nautilus"), "org.gnome.Nautilus")
+  assert.equal(Rules.declaredClass("steam_app_427520"), "steam_app_427520")
+  assert.equal(
+    Rules.classFromEntry("@@startup_wm_class", "/usr/bin/chromium %U", "chromium.desktop"),
+    "chromium")
+})
+
+test("a rule stored for a placeholder class is dropped on load", () => {
+  const state = Rules.normalize({
+    version: 5,
+    rules: [
+      { class: "@@startup_wm_class", workspace: "6", verified: true },
+      { class: "chromium", workspace: "6" }
+    ]
+  })
+  assert.deepEqual(state.rules.map(r => r["class"]), ["chromium"])
+})

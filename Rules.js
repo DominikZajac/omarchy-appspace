@@ -34,6 +34,9 @@ function normalize(raw) {
     var cls = String(entry["class"] || "")
     var ws = String(entry["workspace"] || "")
     if (cls.length === 0 || ws.length === 0) continue
+    // A rule written for a placeholder class (see declaredClass) can never
+    // fire, so it is dropped rather than carried around as a verified rule.
+    if (declaredClass(cls) !== cls) continue
     state.rules.push({
       "class": cls,
       "workspace": ws,
@@ -453,8 +456,20 @@ function classFromDesktopId(id) {
 // Exec, so the filename fallback yields "Factorio" while the actual XWayland
 // window is "steam_app_427520". The game id in the Exec line is the reliable
 // bridge between the two.
+// Arch's chromium.desktop ships `StartupWMClass=@@startup_wm_class`: a build
+// template placeholder nobody filled in. Trusting it produced a rule for a
+// class no window will ever carry, flagged as verified. A declared class is
+// only usable when it looks like one: no template markers, no whitespace, no
+// shell or field-code characters.
+function declaredClass(startupClass) {
+  var value = String(startupClass || "").trim()
+  if (value.length === 0) return ""
+  if (/[@$%"'`\s]/.test(value)) return ""
+  return value
+}
+
 function classFromEntry(startupClass, execString, id) {
-  var declared = String(startupClass || "")
+  var declared = declaredClass(startupClass)
   if (declared.length > 0) return declared
 
   var steam = String(execString || "").match(/steam:\/\/rungameid\/(\d+)/)
@@ -504,6 +519,7 @@ if (typeof module !== "undefined") {
     luaString: luaString,
     moveWindowLua: moveWindowLua,
     classFromDesktopId: classFromDesktopId,
+    declaredClass: declaredClass,
     classFromEntry: classFromEntry,
     matches: matches
   }

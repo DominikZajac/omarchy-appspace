@@ -216,7 +216,7 @@ Panel {
     for (var j = 0; j < entries.length; j++) {
       var entry = entries[j]
       if (!entry || entry.noDisplay === true) continue
-      var declared = String(entry.startupClass || "")
+      var declared = Rules.declaredClass(entry.startupClass)
       var derived = Rules.classFromEntry(declared, entry.execString, entry.id)
       // A learned alias replaces the guess outright, which is what collapses a
       // Steam game's launcher entry and its real window into one row.
@@ -353,7 +353,7 @@ Panel {
     var row = root.selectedRow
     if (!row) return
     var next = Rules.upsert(root.state, row.cls, String(workspace),
-                            row.rule ? row.rule["silent"] === true : false, row.cls,
+                            row.rule ? row.rule["silent"] === true : false, row.name,
                             row.verified === true, row.command)
     root.apply(next, row.running ? row.address : "", String(workspace),
                row.cls + " → workspace " + workspace)
@@ -363,7 +363,7 @@ Panel {
     var row = root.selectedRow
     if (!row || !row.rule) return
     var quiet = !(row.rule["silent"] === true)
-    var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.cls,
+    var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.name,
                             row.verified === true, row.command)
     root.apply(next, "", "", row.cls + (quiet ? " → silent" : " → follow focus"))
   }
