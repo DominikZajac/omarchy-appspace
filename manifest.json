@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "dominikzajac.appws",
-  "name": "App workspaces",
+  "id": "dominikzajac.appspace",
+  "name": "AppSpace",
   "version": "0.2.0",
   "author": "Dominik Zajac",
   "license": "MIT",
-  "description": "Assign applications to workspaces, and workspaces to monitors, without hand-editing the Hyprland config.",
+  "description": "Manage where apps open: which workspace, and on which monitor.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "App workspaces",
-    "description": "Pin apps to workspaces and workspaces to monitors.",
+    "displayName": "AppSpace",
+    "description": "Manage where apps open: which workspace, and on which monitor.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

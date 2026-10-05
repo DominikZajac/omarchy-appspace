@@ -86,7 +86,7 @@ test("generated Lua is syntactically valid", (t) => {
   }
   let state = Rules.normalize({ rules: [{ class: 'we"ird\\class', workspace: "9" }] })
   state = Rules.setWorkspaceMonitor(state, "9", 'desc:Odd "Monitor" \\ Name')
-  const file = path.join(fs.mkdtempSync("/tmp/appws-"), "generated.lua")
+  const file = path.join(fs.mkdtempSync("/tmp/appspace-"), "generated.lua")
   fs.writeFileSync(file, Rules.toLua(state))
   childProcess.execFileSync(luac, ["-p", file])
 })

@@ -8,18 +8,18 @@ import "Rules.js" as Rules
 
 // Bar widget: pick an app or window on the left, set its workspace (and which
 // monitor that workspace lives on) on the right. Writes rules.json, regenerates
-// ~/.config/hypr/appws.lua and reloads Hyprland.
+// ~/.config/hypr/appspace.lua and reloads Hyprland.
 Panel {
   id: root
-  moduleName: "dominikzajac.appws"
-  ipcTarget: "dominikzajac.appws"
+  moduleName: "dominikzajac.appspace"
+  ipcTarget: "dominikzajac.appspace"
   // We own the single IpcHandler the target allows, so it can carry
   // list/set/unset on top of the base open/close/toggle.
   manageIpc: false
 
   readonly property string home: Quickshell.env("HOME")
-  readonly property string rulesPath: root.home + "/.local/state/omarchy/appws/rules.json"
-  readonly property string luaPath: root.home + "/.config/hypr/appws.lua"
+  readonly property string rulesPath: root.home + "/.local/state/omarchy/appspace/rules.json"
+  readonly property string luaPath: root.home + "/.config/hypr/appspace.lua"
 
   // Model
   property var state: Rules.emptyState()
@@ -56,6 +56,10 @@ Panel {
   // these the slot collapses to 0x0 and the icon never appears on the bar.
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
+
+  readonly property string panelTitle: "AppSpace"
+
+  readonly property string panelDescription: "Manage where apps open: which workspace, and on which monitor"
 
   readonly property color foreground: root.bar ? root.bar.foreground : Color.foreground
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
@@ -625,20 +629,24 @@ Panel {
   }
 
   // FileView does not create directories, and on a fresh install
-  // ~/.local/state/omarchy/appws/ does not exist yet. The Lua module is seeded
-  // as well — with the same output an empty rule set generates — so the
-  // `require("hypr.appws")` line can go into hyprland.lua straight after
-  // enabling the plugin, without Hyprland first reporting a missing module.
+  // ~/.local/state/omarchy/appspace/ does not exist yet. The Lua module is
+  // seeded as well — with the same output an empty rule set generates — so
+  // the `require("hypr.appspace")` line can go into hyprland.lua straight
+  // after enabling the plugin, without Hyprland first reporting a missing
+  // module. A rules file left behind by the plugin's old name, appws, is
+  // adopted so a rename does not lose anyone's rules.
   Process {
     id: bootstrapProc
-    command: ["sh", "-c", "mkdir -p \"$1\"; [ -e \"$2\" ] || printf '%s' \"$3\" > \"$2\"",
-      "sh", root.home + "/.local/state/omarchy/appws", root.luaPath,
-      Rules.toLua(Rules.emptyState())]
+    command: ["sh", "-c",
+      "mkdir -p \"$1\"; [ -e \"$1/rules.json\" ] || { [ -e \"$4\" ] && mv \"$4\" \"$1/rules.json\"; }; "
+        + "[ -e \"$2\" ] || printf '%s' \"$3\" > \"$2\"",
+      "sh", root.home + "/.local/state/omarchy/appspace", root.luaPath,
+      Rules.toLua(Rules.emptyState()), root.home + "/.local/state/omarchy/appws/rules.json"]
     running: true
   }
 
   IpcHandler {
-    target: "dominikzajac.appws"
+    target: "dominikzajac.appspace"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -771,7 +779,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "\u{F0570}"
-    tooltipText: "App workspaces"
+    tooltipText: "AppSpace"
     onPressed: root.toggle()
   }
 
@@ -811,13 +819,35 @@ Panel {
         }
       }
 
-      // ------------------------------------------------------------- tabs
-      Row {
+      // ------------------------------------------------------ hero + tabs
+      //
+      // The same header the first-party panels use: a large glyph on the
+      // left, the panel's name, and one dimmed uppercase line of status.
+      Column {
         id: header
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         spacing: Style.space(10)
+
+        PanelHero {
+          width: parent.width
+          title: root.panelTitle
+          meta: root.panelDescription
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+
+          iconComponent: Component {
+            Text {
+              text: "\u{F0570}"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.display
+            }
+          }
+        }
+
+        PanelSeparator { width: parent.width; foreground: root.foreground }
 
         ButtonGroup {
           id: viewTabs
