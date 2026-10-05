@@ -468,14 +468,84 @@ function declaredClass(startupClass) {
   return value
 }
 
-function classFromEntry(startupClass, execString, id) {
-  var declared = declaredClass(startupClass)
-  if (declared.length > 0) return declared
+// Flatpak exports copy StartupWMClass from the upstream desktop file, but a
+// sandboxed Wayland window carries the Flatpak app id, which is also the
+// desktop id: Discord declares "discord", its window is com.discordapp.Discord.
+function isFlatpakExec(execString) {
+  return /(^|[\s\/])flatpak\s+run\b/.test(String(execString || ""))
+}
 
-  var steam = String(execString || "").match(/steam:\/\/rungameid\/(\d+)/)
+// Terminal launchers name the window themselves, so the class is in the Exec
+// line: `xdg-terminal-exec --app-id=TUI.tile -e lazydocker`, or
+// `omarchy-launch-tui btop`, which becomes org.omarchy.btop.
+function terminalAppId(execString) {
+  var exec = String(execString || "")
+  var flag = exec.match(/--app-id[= ]([^\s"']+)/)
+  if (flag) return flag[1]
+  var tui = exec.match(/omarchy-launch-tui\s+([^\s"']+)/)
+  if (tui) return "org.omarchy." + classFromDesktopId(tui[1])
+  return ""
+}
+
+// omarchy-launch-webapp opens the URL in the default browser's --app mode, and
+// Chromium names such a window "<product>-<host>_<path>-<profile>" with every
+// "/" in the path turned into "_": https://chatgpt.com/ becomes
+// chrome-chatgpt.com__-Default. The product prefix is the one part that
+// depends on which browser is the default, so the caller supplies it.
+function webappClass(execString, browserPrefix) {
+  var prefix = String(browserPrefix || "")
+  if (prefix.length === 0) return ""
+  var m = String(execString || "").match(/omarchy-launch-webapp\s+["']?(https?:\/\/[^\s"']+)/)
+  if (!m) return ""
+  var rest = m[1].replace(/^https?:\/\//, "").replace(/[?#].*$/, "")
+  var slash = rest.indexOf("/")
+  var host = slash === -1 ? rest : rest.substring(0, slash)
+  var path = slash === -1 ? "/" : rest.substring(slash)
+  if (host.length === 0) return ""
+  return prefix + "-" + host + "_" + path.replace(/\//g, "_") + "-Default"
+}
+
+// Mirrors omarchy-launch-webapp: anything outside its list of Chromium
+// derivatives is launched through chromium.desktop, whose product name is
+// "chrome".
+function browserPrefix(defaultBrowserDesktopId) {
+  var id = classFromDesktopId(defaultBrowserDesktopId).toLowerCase()
+  if (id.indexOf("google-chrome") === 0) return "chrome"
+  if (id.indexOf("brave") === 0) return "brave"
+  if (id.indexOf("microsoft-edge") === 0) return "msedge"
+  if (id.indexOf("opera") === 0) return "opera"
+  if (id.indexOf("vivaldi") === 0) return "vivaldi"
+  if (id.indexOf("helium") === 0) return "helium"
+  return "chrome"
+}
+
+function classFromEntry(startupClass, execString, id, browserPrefix) {
+  var exec = String(execString || "")
+
+  var declared = declaredClass(startupClass)
+  if (declared.length > 0 && !isFlatpakExec(exec)) return declared
+
+  var steam = exec.match(/steam:\/\/rungameid\/(\d+)/)
   if (steam) return "steam_app_" + steam[1]
 
+  var tui = terminalAppId(exec)
+  if (tui.length > 0) return tui
+
+  var web = webappClass(exec, browserPrefix)
+  if (web.length > 0) return web
+
   return classFromDesktopId(id)
+}
+
+// Rules are matched case-insensitively for display, but Hyprland compares the
+// stored spelling exactly. Once a live window shows the real spelling the rule
+// is rewritten to it, or "^brave-browser$" keeps missing "Brave-browser".
+// Returns null when the spelling already agrees.
+function respell(state, cls) {
+  var live = String(cls || "")
+  var rule = findCI(state.rules, live)
+  if (!rule || rule["class"] === live) return null
+  return upsert(state, live, rule["workspace"], rule["silent"], rule["label"], true, rule["command"])
 }
 
 function matches(query, row) {
@@ -520,7 +590,12 @@ if (typeof module !== "undefined") {
     moveWindowLua: moveWindowLua,
     classFromDesktopId: classFromDesktopId,
     declaredClass: declaredClass,
+    isFlatpakExec: isFlatpakExec,
+    terminalAppId: terminalAppId,
+    webappClass: webappClass,
+    browserPrefix: browserPrefix,
     classFromEntry: classFromEntry,
+    respell: respell,
     matches: matches
   }
 }

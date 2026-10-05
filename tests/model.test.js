@@ -290,3 +290,68 @@ test("a rule stored for a placeholder class is dropped on load", () => {
   })
   assert.deepEqual(state.rules.map(r => r["class"]), ["chromium"])
 })
+
+// Flatpak exports copy StartupWMClass from upstream, but the sandboxed window
+// carries the Flatpak app id, which is the desktop id.
+test("a flatpak entry uses its app id even when it declares another class", () => {
+  const exec = "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=com.discordapp.Discord com.discordapp.Discord"
+  assert.equal(Rules.isFlatpakExec(exec), true)
+  assert.equal(Rules.isFlatpakExec("/usr/bin/discord"), false)
+  assert.equal(Rules.classFromEntry("discord", exec, "com.discordapp.Discord.desktop"), "com.discordapp.Discord")
+})
+
+// Omarchy's TUI launchers name the terminal window on the command line.
+test("a terminal launcher's app id is the class", () => {
+  assert.equal(Rules.terminalAppId("xdg-terminal-exec --app-id=TUI.tile -e lazydocker"), "TUI.tile")
+  assert.equal(Rules.terminalAppId("xdg-terminal-exec --app-id TUI.float -e bash -c \"dua i /\""), "TUI.float")
+  assert.equal(Rules.terminalAppId("omarchy-launch-tui btop"), "org.omarchy.btop")
+  assert.equal(Rules.terminalAppId("omarchy-launch-tui --app-id=mon -e btop"), "mon")
+  assert.equal(Rules.terminalAppId("btop"), "")
+  assert.equal(Rules.classFromEntry("", "xdg-terminal-exec --app-id=TUI.tile -e lazydocker", "Docker.desktop"), "TUI.tile")
+})
+
+// Chromium names an --app window after the URL: host, "_", path with "/"
+// turned into "_", wrapped in the product name and the profile.
+test("a web app's class is derived from its URL and the default browser", () => {
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://chatgpt.com/", "chrome"), "chrome-chatgpt.com__-Default")
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://github.com/", "brave"), "brave-github.com__-Default")
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://launchpad.37signals.com", "chrome"), "chrome-launchpad.37signals.com__-Default")
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://messages.google.com/web/conversations", "chrome"),
+    "chrome-messages.google.com__web_conversations-Default")
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://x.com/?lang=en", "chrome"), "chrome-x.com__-Default")
+  assert.equal(Rules.webappClass("omarchy-launch-webapp https://chatgpt.com/", ""), "", "no prefix known yet")
+  assert.equal(Rules.webappClass("brave https://chatgpt.com/", "brave"), "", "a plain browser launch is not a web app")
+  assert.equal(Rules.classFromEntry("", "omarchy-launch-webapp https://chatgpt.com/", "ChatGPT.desktop", "chrome"), "chrome-chatgpt.com__-Default")
+  assert.equal(Rules.classFromEntry("", "omarchy-launch-webapp https://chatgpt.com/", "ChatGPT.desktop", ""), "ChatGPT")
+})
+
+test("the browser prefix follows omarchy-launch-webapp's choice of browser", () => {
+  assert.equal(Rules.browserPrefix("chromium.desktop"), "chrome")
+  assert.equal(Rules.browserPrefix("google-chrome.desktop"), "chrome")
+  assert.equal(Rules.browserPrefix("brave-browser.desktop"), "brave")
+  assert.equal(Rules.browserPrefix("microsoft-edge.desktop"), "msedge")
+  assert.equal(Rules.browserPrefix("firefox.desktop"), "chrome", "non-Chromium defaults fall back to chromium")
+  assert.equal(Rules.browserPrefix(""), "chrome")
+})
+
+// brave-browser.desktop declares "brave-browser"; the window is "Brave-browser".
+// Confirming the rule without fixing its spelling left "^brave-browser$" in
+// the Lua, which never matched.
+test("a live window with different casing respells the rule and keeps its settings", () => {
+  let state = Rules.setAutostart(
+    Rules.upsert(Rules.emptyState(), "brave-browser", "4", true, "Brave"), "brave-browser", true, "brave-browser.desktop")
+  const next = Rules.respell(state, "Brave-browser")
+  assert.equal(next.rules.length, 1)
+  const rule = next.rules[0]
+  assert.equal(rule["class"], "Brave-browser")
+  assert.equal(rule["workspace"], "4")
+  assert.equal(rule["silent"], true)
+  assert.equal(rule["label"], "Brave")
+  assert.equal(rule["verified"], true)
+  assert.equal(rule["autostart"], true)
+  assert.equal(rule["command"], "brave-browser.desktop")
+  assert.match(Rules.toLua(next), /o\.window\("\^Brave-browser\$"/)
+
+  assert.equal(Rules.respell(next, "Brave-browser"), null, "no rewrite once the spelling agrees")
+  assert.equal(Rules.respell(next, "never-seen"), null)
+})

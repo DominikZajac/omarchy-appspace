@@ -47,6 +47,11 @@ Panel {
   // window is "com.factorio.Factorio".
   property var steamPids: ({})
 
+  // "chrome", "brave", ... — the product name Chromium puts in front of a web
+  // app's class, taken from the default browser the same way
+  // omarchy-launch-webapp picks it.
+  property string browserPrefix: ""
+
   // The bar sizes each widget from its root implicitWidth/Height. Without
   // these the slot collapses to 0x0 and the icon never appears on the bar.
   implicitWidth: button.implicitWidth
@@ -164,6 +169,7 @@ Panel {
     var order = []
     var learned = []
     var confirm = []
+    var respell = []
 
     // Keyed case-insensitively. A .desktop file can declare a different case
     // than the window actually uses (brave-browser vs Brave-browser); keying
@@ -193,8 +199,11 @@ Panel {
       try { wsName = top.workspace ? String(top.workspace.name) : "" } catch (e) { wsName = "" }
 
       // A live window is proof: remember the class so the rule stays confirmed
-      // after the app closes.
-      if (Rules.findCI(root.state.rules, cls) && !Rules.isVerified(root.state, cls)) confirm.push(cls)
+      // after the app closes. If the rule was written from a desktop entry
+      // with different casing, the stored spelling has to follow the window.
+      var matched = Rules.findCI(root.state.rules, cls)
+      if (matched && matched["class"] !== cls) respell.push(cls)
+      else if (matched && !Rules.isVerified(root.state, cls)) confirm.push(cls)
 
       var appId = root.steamPids[String(ipc["pid"] || "")]
       if (appId) learned.push({ from: "steam_app_" + appId, to: cls })
@@ -216,8 +225,11 @@ Panel {
     for (var j = 0; j < entries.length; j++) {
       var entry = entries[j]
       if (!entry || entry.noDisplay === true) continue
-      var declared = Rules.declaredClass(entry.startupClass)
-      var derived = Rules.classFromEntry(declared, entry.execString, entry.id)
+      var derived = Rules.classFromEntry(entry.startupClass, entry.execString, entry.id,
+                                         root.browserPrefix)
+      // A TUI that opens inside the default terminal gets the terminal's class,
+      // which this plugin cannot know, unless the launcher sets an app id.
+      if (entry.runInTerminal === true && Rules.terminalAppId(entry.execString).length === 0) continue
       // A learned alias replaces the guess outright, which is what collapses a
       // Steam game's launcher entry and its real window into one row.
       var guessed = Rules.resolveAlias(root.state, derived)
@@ -228,7 +240,11 @@ Panel {
         name: String(entry.name || guessed),
         icon: root.iconSource(entry.icon),
         running: false,
-        verified: guessed !== derived || (declared.length > 0 && declared === guessed),
+        // Only a live window proves a class. A declared StartupWMClass is a
+        // guess like any other: Obsidian declares md.Obsidian and opens as
+        // md.obsidian.Obsidian, Pinta declares Pinta and opens as
+        // com.github.PintaProject.Pinta.
+        verified: guessed !== derived,
         command: Rules.launchTarget(entry.id, entry.command),
         address: "",
         ws: ""
@@ -289,17 +305,20 @@ Panel {
     root.rows = out
     if (!root.rowForKey(root.selectedKey)) root.selectKey(out.length > 0 ? out[0].cls : "")
 
-    root.rememberFindings(learned, confirm)
+    root.rememberFindings(learned, confirm, respell)
   }
 
   // Aliases and confirmations are bookkeeping: they change nothing Hyprland
   // reads, so they go straight to rules.json with no reload and no rollback
   // dance. Writing only when something actually changed keeps the FileView
-  // watch from bouncing.
-  function rememberFindings(learned, confirm) {
+  // watch from bouncing. A respelled class is the exception: the Lua has to
+  // be regenerated for the rule to start matching, so that goes through the
+  // full write pipeline.
+  function rememberFindings(learned, confirm, respell) {
     if (root.applying) return
     var next = root.state
     var changed = false
+    var corrected = ""
 
     for (var i = 0; i < learned.length; i++) {
       var aliased = Rules.putAlias(next, learned[i].from, learned[i].to)
@@ -309,8 +328,16 @@ Panel {
       var marked = Rules.markVerified(next, confirm[j])
       if (marked) { next = marked; changed = true }
     }
+    for (var k = 0; k < (respell || []).length; k++) {
+      var spelled = Rules.respell(next, respell[k])
+      if (spelled) { next = spelled; changed = true; corrected = respell[k] }
+    }
 
     if (!changed) return
+    if (corrected.length > 0) {
+      root.apply(next, "", "", "Class corrected to " + corrected)
+      return
+    }
     root.state = next
     rulesFile.setText(Rules.toJson(next))
   }
@@ -549,6 +576,22 @@ Panel {
   Process {
     id: evalProc
     command: ["hyprctl", "eval", ""]
+  }
+
+  // Read once: the default browser decides the product prefix of every web
+  // app's class, and changing it is rare enough that a shell restart may
+  // pick it up.
+  Process {
+    id: browserProbe
+    command: ["xdg-settings", "get", "default-web-browser"]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.browserPrefix = Rules.browserPrefix(String(text || "").trim())
+        root.rebuild()
+      }
+    }
   }
 
   Process {
