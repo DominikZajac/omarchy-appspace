@@ -736,9 +736,21 @@ Panel {
     }
   }
 
+  // Windows are watched while the panel is closed too: a rule written from a
+  // desktop entry is only confirmed, respelled or carried over to an alias
+  // when its window is seen, and that must not wait for the next time the
+  // panel happens to be open. The timer coalesces a burst of windows into one
+  // refresh and lets a new window's class settle before it is read.
   Connections {
     target: Hyprland.toplevels
-    function onValuesChanged() { if (root.opened) root.rebuild() }
+    function onValuesChanged() { windowSettle.restart() }
+  }
+
+  Timer {
+    id: windowSettle
+    interval: 600
+    repeat: false
+    onTriggered: root.refresh()
   }
 
   onOpenedChanged: {
