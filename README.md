@@ -5,7 +5,7 @@
 An Omarchy bar widget that manages where apps open: which workspace, and on
 which monitor — without hand-editing the Hyprland config.
 
-Click the grid icon on the bar. Pick an app on the left, click a workspace on the
+Click the monitor icon on the bar. Pick an app on the left, click a workspace on the
 right — that's the whole interaction. The rule is written, Hyprland is reloaded,
 and if the app is already running its window moves there immediately.
 
@@ -108,7 +108,7 @@ it.
 omarchy plugin add https://github.com/DominikZajac/omarchy-appspace.git --enable
 ```
 
-Enabling puts the grid icon in the bar's right section. Move it with
+Enabling puts the monitor icon in the bar's right section. Move it with
 `omarchy bar move dominikzajac.appspace --section center` if you prefer it elsewhere.
 
 Then wire the generated module into `~/.config/hypr/hyprland.lua`, after the
