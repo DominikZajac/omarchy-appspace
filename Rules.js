@@ -263,6 +263,22 @@ function putAlias(state, from, to) {
   return next
 }
 
+// A rule written against a guessed class follows the alias to the class the
+// window really uses, or the launcher row would lose its rule while an
+// orphan rule for the guess lingered on. Returns null when there is nothing
+// to move.
+function migrateRule(state, from, to) {
+  var source = String(from || "")
+  var target = String(to || "")
+  if (source.length === 0 || target.length === 0 || source === target) return null
+  var rule = find(state.rules, source)
+  if (!rule || findCI(state.rules, target)) return null
+  var next = upsert(remove(state, source), target, rule["workspace"], rule["silent"],
+                    rule["label"], true, rule["command"])
+  if (rule["autostart"] === true) next = setAutostart(next, target, true, rule["command"])
+  return next
+}
+
 function resolveAlias(state, cls) {
   var value = String(cls || "")
   var mapped = state.aliases[value]
@@ -573,6 +589,7 @@ if (typeof module !== "undefined") {
     launchTarget: launchTarget,
     isVerified: isVerified,
     putAlias: putAlias,
+    migrateRule: migrateRule,
     resolveAlias: resolveAlias,
     upsert: upsert,
     remove: remove,

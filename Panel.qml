@@ -323,6 +323,8 @@ Panel {
     for (var i = 0; i < learned.length; i++) {
       var aliased = Rules.putAlias(next, learned[i].from, learned[i].to)
       if (aliased) { next = aliased; changed = true }
+      var moved = Rules.migrateRule(next, learned[i].from, learned[i].to)
+      if (moved) { next = moved; changed = true; corrected = learned[i].to }
     }
     for (var j = 0; j < confirm.length; j++) {
       var marked = Rules.markVerified(next, confirm[j])

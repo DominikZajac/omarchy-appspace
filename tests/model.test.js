@@ -355,3 +355,28 @@ test("a live window with different casing respells the rule and keeps its settin
   assert.equal(Rules.respell(next, "Brave-browser"), null, "no rewrite once the spelling agrees")
   assert.equal(Rules.respell(next, "never-seen"), null)
 })
+
+// Factorio's launcher entry guesses steam_app_427520; the window is
+// com.factorio.Factorio. Learning the alias folded the rows but left the rule
+// on the guess, so the real window had no rule and the guess lingered as an
+// orphan.
+test("a learned alias carries the rule over to the real class", () => {
+  let state = Rules.setAutostart(
+    Rules.upsert(Rules.emptyState(), "steam_app_427520", "9", true, "Factorio"),
+    "steam_app_427520", true, "Factorio.desktop")
+  const next = Rules.migrateRule(state, "steam_app_427520", "com.factorio.Factorio")
+  assert.deepEqual(next.rules.map(r => r["class"]), ["com.factorio.Factorio"])
+  const rule = next.rules[0]
+  assert.equal(rule["workspace"], "9")
+  assert.equal(rule["silent"], true)
+  assert.equal(rule["label"], "Factorio")
+  assert.equal(rule["verified"], true)
+  assert.equal(rule["autostart"], true)
+  assert.equal(rule["command"], "Factorio.desktop")
+
+  assert.equal(Rules.migrateRule(next, "steam_app_427520", "com.factorio.Factorio"), null, "nothing left to move")
+  assert.equal(Rules.migrateRule(state, "steam_app_1", "x"), null, "no rule for the guess")
+  const both = Rules.upsert(state, "com.factorio.Factorio", "2", false, "Factorio")
+  assert.equal(Rules.migrateRule(both, "steam_app_427520", "com.factorio.Factorio"), null,
+    "a rule on the real class is never overwritten")
+})
