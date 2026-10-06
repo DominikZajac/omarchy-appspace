@@ -18,9 +18,9 @@ A dot marks what is currently running. Assign a workspace, toggle *Silent* and
 **Workspaces** — one row per workspace: which monitor it lives on, which apps are
 pinned to it, and whether it is always present. `+ Add workspace` creates the next
 free one as always-present. Switch it to *On demand* and it stays listed, so you
-can still pin apps or a monitor to it. An on-demand workspace above 5 has a ×:
-removing it also drops the rules of the apps pinned to it, after a confirmation
-when there is anything to lose. Open windows stay where they are.
+can still pin apps or a monitor to it. Every workspace above 5 has a ×: removing
+it drops its settings and the rules of the apps pinned to it, after a
+confirmation when apps or a monitor are attached. Open windows stay where they are.
 
 Switch with the tabs or `Ctrl+Tab`.
 

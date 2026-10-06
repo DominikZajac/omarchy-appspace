@@ -470,6 +470,7 @@ Panel {
     var bits = []
     if (pinned > 0) bits.push(pinned === 1 ? "the app pinned to it loses its rule" : pinned + " pinned apps lose their rules")
     if (Rules.workspaceMonitor(root.state, root.removeTarget).length > 0) bits.push("its monitor pin is dropped")
+    if (Rules.workspacePersistent(root.state, root.removeTarget)) bits.push("it is no longer always present")
     return "Remove workspace " + root.removeTarget + "? " + bits.join(", ").replace(/^./, function(c) { return c.toUpperCase() }) + "."
   }
 
@@ -1471,10 +1472,10 @@ Panel {
                 }
 
                 // A workspace above the five the bar always shows can be
-                // dropped again while it is on demand. The slot stays even
-                // when the button does not, so the rows line up.
+                // dropped again. The slot stays even when the button does
+                // not, so the rows line up.
                 Button {
-                  readonly property bool removable: wsRow.modelData > 5 && !wsRow.persistent
+                  readonly property bool removable: wsRow.modelData > 5
                   iconText: "\u{F0156}"
                   tooltipText: wsRow.pinned.length > 0
                     ? "Remove this workspace and the rules of the apps pinned to it"
