@@ -863,6 +863,9 @@ Panel {
   }
 
   onOpenedChanged: {
+    // A confirmation left open when the panel closes must not greet the
+    // next open.
+    root.removeTarget = ""
     if (!root.opened) return
     root.filterText = ""
     root.status = ""
