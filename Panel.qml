@@ -55,6 +55,13 @@ Panel {
   // omarchy-launch-webapp picks it.
   property string browserPrefix: ""
 
+  // XDG autostart entries that would start under this desktop, from
+  // /etc/xdg/autostart and ~/.config/autostart. An app that starts itself at
+  // login (1Password writes its own entry) must not be launched a second time
+  // by this plugin: at login the two launches raced within the same second
+  // and whichever lost closed on the app's single-instance lock.
+  property var autostartEntries: []
+
   // The bar sizes each widget from its root implicitWidth/Height. Without
   // these the slot collapses to 0x0 and the icon never appears on the bar.
   implicitWidth: button.implicitWidth
@@ -242,10 +249,12 @@ Panel {
       var guessed = Rules.resolveAlias(root.state, derived)
       if (guessed.length === 0) continue
 
+      var own = Rules.ownAutostartFor(root.autostartEntries, entry.id, entry.execString)
       var row = put({
         cls: guessed,
         name: String(entry.name || guessed),
         icon: root.iconSource(entry.icon),
+        ownAutostart: own,
         running: false,
         // Only a live window proves a class. A declared StartupWMClass is a
         // guess like any other: Obsidian declares md.Obsidian and opens as
@@ -261,6 +270,7 @@ Panel {
       if (row.running) {
         row.name = String(entry.name || row.name)
         if (!row.icon) row.icon = root.iconSource(entry.icon)
+        if (!row.ownAutostart) row.ownAutostart = own
         // A running window has no command of its own; the desktop entry is the
         // only place a launch line can come from.
         if (!row.command) row.command = Rules.launchTarget(entry.id, entry.command)
@@ -476,6 +486,14 @@ Panel {
     if (!baselineProc.running) baselineProc.running = true
   }
 
+  // Class -> the app's own autostart entry, for the launch guard in the Lua.
+  function ownAutostartMap() {
+    var out = ({})
+    for (var i = 0; i < root.rows.length; i++)
+      if (root.rows[i].ownAutostart) out[root.rows[i].cls] = root.rows[i].ownAutostart
+    return out
+  }
+
   function onBaselineChecked(errText) {
     root.errorBaseline = String(errText || "").trim()
     var next = root.stagedState || Rules.emptyState()
@@ -483,7 +501,7 @@ Panel {
 
     root.state = next
     rulesFile.setText(Rules.toJson(next))
-    luaFile.setText(Rules.toLua(next))
+    luaFile.setText(Rules.toLua(next, root.ownAutostartMap()))
     root.rebuild()
 
     if (!reloadProc.running) reloadProc.running = true
@@ -536,6 +554,7 @@ Panel {
   function refresh() {
     try { Hyprland.refreshToplevels() } catch (e) {}
     if (!steamProbe.running) steamProbe.running = true
+    if (!autostartProbe.running) autostartProbe.running = true
     root.rebuild()
   }
 
@@ -598,6 +617,26 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         root.browserPrefix = Rules.browserPrefix(String(text || "").trim())
+        root.rebuild()
+      }
+    }
+  }
+
+  Process {
+    id: autostartProbe
+    command: ["sh", "-c",
+      "for d in /etc/xdg/autostart \"${XDG_CONFIG_HOME:-$HOME/.config}/autostart\"; do "
+      + "for f in \"$d\"/*.desktop; do [ -e \"$f\" ] || continue; "
+      + "printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$(basename \"$f\")\" "
+      + "\"$(sed -n 's/^Hidden=//p' \"$f\" | head -1)\" "
+      + "\"$(sed -n 's/^OnlyShowIn=//p' \"$f\" | head -1)\" "
+      + "\"$(sed -n 's/^NotShowIn=//p' \"$f\" | head -1)\" "
+      + "\"$(sed -n 's/^Exec=//p' \"$f\" | head -1)\"; done; done"]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.autostartEntries = Rules.parseAutostart(text, Quickshell.env("XDG_CURRENT_DESKTOP") || "Hyprland")
         root.rebuild()
       }
     }
@@ -1138,18 +1177,25 @@ Panel {
             Toggle {
               readonly property bool launchable: root.selectedRow
                 && String(root.selectedRow.command || "").length > 0
+              // The app installs its own login entry (1Password does). A
+              // second launch from here would only lose the race and close on
+              // the app's single-instance lock, so the switch is left alone.
+              readonly property bool startsItself: root.selectedRow
+                && String(root.selectedRow.ownAutostart || "").length > 0
 
               width: parent.width
               visible: root.selectedRow && !!root.selectedRow.rule
               label: "Launch at startup"
-              description: launchable
-                ? "Opens on its workspace when you log in"
-                : "Unavailable: no desktop entry to launch this class from"
+              description: startsItself
+                ? (root.selectedRow.name + " already starts itself when you log in, from its own settings")
+                : launchable
+                  ? "Opens on its workspace when you log in"
+                  : "Unavailable: no desktop entry to launch this class from"
               checked: root.selectedRow && Rules.isAutostart(root.state, root.selectedRow.cls)
               // Without a command there is nothing to put in the launch line,
               // so the row stays visible but inert rather than silently no-op.
-              enabled: launchable
-              opacity: launchable ? 1 : 0.45
+              enabled: launchable && !startsItself
+              opacity: launchable && !startsItself ? 1 : 0.45
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.toggleAutostart()

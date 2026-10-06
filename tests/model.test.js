@@ -246,8 +246,8 @@ test("the launch block is guarded and skips rules with nothing to launch", () =>
 
   state = Rules.setAutostart(state, "foot", true, "foot.desktop")
   const lua = Rules.toLua(state)
-  assert.match(lua, /if type\(o\.launch_on_start\) == "function" then/)
-  assert.match(lua, /o\.launch_on_start\("foot\.desktop"\)/)
+  assert.match(lua, /if type\(o\.exec_on_start\) == "function" then/)
+  assert.match(lua, /o\.exec_on_start\("sleep 2; systemctl --user is-active -q 'app-foot@autostart\.service' \|\| uwsm-app -- foot\.desktop"\)/)
 })
 
 // Regression: markVerified rebuilt the rule from a subset of its fields, so
@@ -379,4 +379,52 @@ test("a learned alias carries the rule over to the real class", () => {
   const both = Rules.upsert(state, "com.factorio.Factorio", "2", false, "Factorio")
   assert.equal(Rules.migrateRule(both, "steam_app_427520", "com.factorio.Factorio"), null,
     "a rule on the real class is never overwritten")
+})
+
+// 1Password installs ~/.config/autostart/1password.desktop for itself. At
+// login that entry and our launch line raced within the same second, and
+// whichever lost closed on the single-instance lock.
+test("unit names follow systemd escaping", () => {
+  assert.equal(Rules.autostartUnit("1password.desktop"), "app-1password@autostart.service")
+  assert.equal(Rules.autostartUnit("brave-browser.desktop"), "app-brave\\x2dbrowser@autostart.service")
+  assert.equal(Rules.autostartUnit("org.gnome.Nautilus.desktop"), "app-org.gnome.Nautilus@autostart.service")
+  assert.equal(Rules.systemdEscape(".hidden"), "\\x2ehidden")
+})
+
+test("the launch line waits for the autostart pass and skips an app that started itself", () => {
+  assert.equal(Rules.launchCommand("1password.desktop", ""),
+    "sleep 2; systemctl --user is-active -q 'app-1password@autostart.service' || uwsm-app -- 1password.desktop")
+  assert.equal(Rules.launchCommand("spotify.desktop", "com.spotify.Client.desktop"),
+    "sleep 2; systemctl --user is-active -q 'app-spotify@autostart.service'"
+    + " || systemctl --user is-active -q 'app-com.spotify.Client@autostart.service' || uwsm-app -- spotify.desktop")
+  assert.equal(Rules.launchCommand("foot.desktop", "foot.desktop"),
+    "sleep 2; systemctl --user is-active -q 'app-foot@autostart.service' || uwsm-app -- foot.desktop",
+    "the same entry is not checked twice")
+})
+
+test("the generated Lua checks the app's own autostart entry when one is known", () => {
+  let state = Rules.setAutostart(
+    Rules.upsert(Rules.emptyState(), "spotify", "4", false, "Spotify"), "spotify", true, "spotify.desktop")
+  const lua = Rules.toLua(state, { "spotify": "com.spotify.Client.desktop" })
+  assert.match(lua, /app-com\.spotify\.Client@autostart\.service/)
+  assert.match(lua, /uwsm-app -- spotify\.desktop/)
+})
+
+test("autostart entries are parsed, user overrides system, hidden and foreign-desktop ones drop out", () => {
+  const text = [
+    "1password.desktop\t\t\t\t/opt/1Password/1password --silent",
+    "gnome-thing.desktop\t\tGNOME;\t\tgnome-thing",
+    "not-here.desktop\t\t\tHyprland;\tnot-here",
+    "old.desktop\tfalse\t\t\told",
+    "old.desktop\ttrue\t\t\told",
+    "quoted.desktop\t\t\t\t\"/opt/My App/app\" --flag"
+  ].join("\n")
+  const entries = Rules.parseAutostart(text, "Hyprland")
+  assert.deepEqual(entries.map(e => e.basename).sort(), ["1password.desktop", "quoted.desktop"])
+
+  assert.equal(Rules.ownAutostartFor(entries, "1password.desktop", "/opt/1Password/1password %U"), "1password.desktop", "by name")
+  assert.equal(Rules.ownAutostartFor(entries, "com.onepassword.OnePassword.desktop", "/opt/1Password/1password %U"), "1password.desktop", "by binary")
+  assert.equal(Rules.ownAutostartFor(entries, "myapp.desktop", "\"/opt/My App/app\" %F"), "quoted.desktop", "quoted binary")
+  assert.equal(Rules.ownAutostartFor(entries, "foot.desktop", "foot"), "")
+  assert.equal(Rules.ownAutostartFor([], "foot.desktop", "foot"), "")
 })
