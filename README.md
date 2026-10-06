@@ -15,6 +15,8 @@ and if the app is already running its window moves there immediately.
 in three sections: *Running*, *Pinned* (has a rule, not open) and *Installed*. Assign a workspace, toggle *Silent* and
 *Launch at startup*, remove the rule.
 
+![Workspaces view](preview-workspaces.png)
+
 **Workspaces** — one row per workspace: which monitor it lives on, which apps are
 pinned to it, and whether it is always present. `+ Add workspace` creates the next
 free one as always-present. Switch it to *On demand* and it stays listed, so you
