@@ -261,7 +261,7 @@ test("the launch block is guarded and skips rules with nothing to launch", () =>
   state = Rules.setAutostart(state, "foot", true, "foot.desktop")
   const lua = Rules.toLua(state)
   assert.match(lua, /if type\(o\.exec_on_start\) == "function" then/)
-  assert.match(lua, /o\.exec_on_start\("sleep 2; systemctl --user is-active -q 'app-foot@autostart\.service' \|\| uwsm-app -- foot\.desktop"\)/)
+  assert.match(lua, /o\.exec_on_start\("sleep 2; systemctl --user is-active -q app-foot@autostart\.service \|\| uwsm-app -- foot\.desktop"\)/)
 })
 
 // Regression: markVerified rebuilt the rule from a subset of its fields, so
@@ -407,13 +407,18 @@ test("unit names follow systemd escaping", () => {
 
 test("the launch line waits for the autostart pass and skips an app that started itself", () => {
   assert.equal(Rules.launchCommand("1password.desktop", ""),
-    "sleep 2; systemctl --user is-active -q 'app-1password@autostart.service' || uwsm-app -- 1password.desktop")
+    "sleep 2; systemctl --user is-active -q app-1password@autostart.service || uwsm-app -- 1password.desktop")
   assert.equal(Rules.launchCommand("spotify.desktop", "com.spotify.Client.desktop"),
-    "sleep 2; systemctl --user is-active -q 'app-spotify@autostart.service'"
-    + " || systemctl --user is-active -q 'app-com.spotify.Client@autostart.service' || uwsm-app -- spotify.desktop")
+    "sleep 2; systemctl --user is-active -q app-spotify@autostart.service"
+    + " || systemctl --user is-active -q app-com.spotify.Client@autostart.service || uwsm-app -- spotify.desktop")
   assert.equal(Rules.launchCommand("foot.desktop", "foot.desktop"),
-    "sleep 2; systemctl --user is-active -q 'app-foot@autostart.service' || uwsm-app -- foot.desktop",
+    "sleep 2; systemctl --user is-active -q app-foot@autostart.service || uwsm-app -- foot.desktop",
     "the same entry is not checked twice")
+  // Steam writes "Slay the Spire 2.desktop"; a bare target would be split by the shell.
+  assert.equal(Rules.launchCommand("Slay the Spire 2.desktop", ""),
+    "sleep 2; systemctl --user is-active -q 'app-Slay\\x20the\\x20Spire\\x202@autostart.service' || uwsm-app -- 'Slay the Spire 2.desktop'")
+  assert.equal(Rules.launchCommand("x;rm -rf ~.desktop", ""),
+    "sleep 2; systemctl --user is-active -q 'app-x\\x3brm\\x20\\x2drf\\x20\\x7e@autostart.service' || uwsm-app -- 'x;rm -rf ~.desktop'")
 })
 
 test("the generated Lua checks the app's own autostart entry when one is known", () => {
@@ -471,4 +476,23 @@ test("monitors are named by connector and vendor, with a position only when ther
   const stacked = [{ name: "DP-1", description: "LG Electronics A 1", x: 0, y: 0 }, { name: "DP-2", description: "LG Electronics B 2", x: 0, y: 1440 }]
   assert.equal(Rules.monitorLabel(stacked, 0), "LG Electronics (DisplayPort 1) · top")
   assert.equal(Rules.monitorLabel(stacked, 1), "LG Electronics (DisplayPort 2) · bottom")
+})
+
+// Reported during marketplace review: a window class or app name with a
+// newline ended the "-- label" comment and ran the rest as Lua on reload.
+test("labels cannot break out of the Lua comment they are written into", () => {
+  assert.equal(Rules.luaComment("Foot"), "Foot")
+  assert.equal(Rules.luaComment("evil\nhl.exec_cmd('rm -rf ~')"), "evil hl.exec_cmd('rm -rf ~')")
+  assert.equal(Rules.luaComment("a\r\n\tb\u2028c"), "a b c")
+  assert.equal(Rules.luaComment("x".repeat(100)).length, 80)
+
+  let state = Rules.upsert(Rules.emptyState(), "evil\nhl.exec_cmd('touch /tmp/pwned')", "3", false,
+    "label\nhl.exec_cmd('touch /tmp/pwned')")
+  state = Rules.setAutostart(state, "evil\nhl.exec_cmd('touch /tmp/pwned')", true, "evil\n.desktop")
+  const lua = Rules.toLua(state)
+  const code = lua.split("\n").filter(l => !/^\s*--/.test(l) && l.trim().length > 0)
+  assert.ok(code.every(l => !/touch \/tmp\/pwned/.test(l) || /^\s*o\.(window|exec_on_start)\(/.test(l)),
+    "the payload only ever appears inside a quoted string on a rule line")
+  assert.ok(!/\nhl\.exec_cmd/.test(lua), "no line starts with injected code")
+  assert.match(lua, /o\.window\("\^evil\\nhl/, "the class is escaped inside the pattern string")
 })

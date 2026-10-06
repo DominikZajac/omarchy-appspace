@@ -373,6 +373,19 @@ function classPattern(cls) {
   return "^" + regexEscape(cls) + "$"
 }
 
+// Text that goes after "--" in the generated file. A label comes from a
+// window class or a desktop entry name, which an application controls; a
+// newline in it would end the comment and turn the rest into executed Lua.
+// Line breaks and control characters become spaces, and long text is cut.
+function luaComment(value) {
+  var text = String(value === undefined || value === null ? "" : value)
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (text.length > 80) text = text.substring(0, 79) + "\u2026"
+  return text
+}
+
 function luaString(value) {
   var s = String(value === undefined || value === null ? "" : value)
   var out = ""
@@ -434,7 +447,7 @@ function toLua(state, ownAutostart) {
     var target = rule["workspace"] + (rule["silent"] ? " silent" : "")
     lines.push("o.window(" + luaString(classPattern(rule["class"]))
       + ", { workspace = " + luaString(target) + " })"
-      + "  -- " + rule["label"])
+      + "  -- " + luaComment(rule["label"]))
   }
   var launched = []
   for (var k = 0; k < state.rules.length; k++) {
@@ -455,7 +468,7 @@ function toLua(state, ownAutostart) {
     for (var m = 0; m < launched.length; m++) {
       var own = ownAutostart && ownAutostart[launched[m]["class"]]
       lines.push("  o.exec_on_start(" + luaString(launchCommand(launched[m]["command"], own))
-        + ")  -- " + launched[m]["label"])
+        + ")  -- " + luaComment(launched[m]["label"]))
     }
     lines.push("end")
   }
@@ -493,8 +506,8 @@ function launchCommand(target, ownBasename) {
   if (own.length > 0 && autostartUnit(own) !== units[0]) units.push(autostartUnit(own))
   var checks = []
   for (var i = 0; i < units.length; i++)
-    checks.push("systemctl --user is-active -q '" + units[i] + "'")
-  return "sleep 2; " + checks.join(" || ") + " || uwsm-app -- " + target
+    checks.push("systemctl --user is-active -q " + shellCommand([units[i]]))
+  return "sleep 2; " + checks.join(" || ") + " || uwsm-app -- " + shellCommand([target])
 }
 
 // Parses the probe output: one tab-separated line per autostart file,
@@ -775,6 +788,7 @@ if (typeof module !== "undefined") {
     ownAutostartFor: ownAutostartFor,
     classPattern: classPattern,
     luaString: luaString,
+    luaComment: luaComment,
     moveWindowLua: moveWindowLua,
     connectorLabel: connectorLabel,
     monitorVendor: monitorVendor,
