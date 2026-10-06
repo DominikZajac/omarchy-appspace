@@ -18,8 +18,9 @@ A dot marks what is currently running. Assign a workspace, toggle *Silent* and
 **Workspaces** — one row per workspace: which monitor it lives on, which apps are
 pinned to it, and whether it is always present. `+ Add workspace` creates the next
 free one as always-present. Switch it to *On demand* and it stays listed, so you
-can still pin apps or a monitor to it; *Remove* appears once nothing is left on
-it and drops it from the list.
+can still pin apps or a monitor to it. An on-demand workspace above 5 has a ×:
+removing it also drops the rules of the apps pinned to it, after a confirmation
+when there is anything to lose. Open windows stay where they are.
 
 Switch with the tabs or `Ctrl+Tab`.
 
@@ -201,7 +202,7 @@ omarchy-shell dominikzajac.appspace unset spotify
 omarchy-shell dominikzajac.appspace pin 3 "LG Electronics MP59G 0x01010101"
 omarchy-shell dominikzajac.appspace pin 3 ""                 # back to auto
 omarchy-shell dominikzajac.appspace persist 6 on             # always-present workspace
-omarchy-shell dominikzajac.appspace forget 6                 # drop an empty workspace from the list
+omarchy-shell dominikzajac.appspace forget 6                 # drop workspace 6 and its pinned apps' rules
 omarchy-shell dominikzajac.appspace autostart spotify on    # launch at login
 omarchy-shell dominikzajac.appspace view workspaces
 omarchy-shell dominikzajac.appspace select vesktop

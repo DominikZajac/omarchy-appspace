@@ -317,11 +317,14 @@ function putWorkspace(state, workspace, monitor, persistent) {
   return next
 }
 
-// Forgets a workspace the user added. Rules pointing at it are left alone:
-// they keep listing it, and removing them is a separate decision.
+// Removes a workspace: its monitor and persistence, and every rule that
+// pinned an app to it. Leaving the rules would only bring the row straight
+// back, since a workspace with rules is always listed.
 function removeWorkspace(state, workspace) {
+  var name = String(workspace)
   var next = cloneState(state)
-  delete next.workspaces[String(workspace)]
+  delete next.workspaces[name]
+  next.rules = next.rules.filter(function(rule) { return String(rule["workspace"]) !== name })
   return next
 }
 

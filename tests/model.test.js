@@ -40,6 +40,14 @@ test("a workspace with neither a monitor nor persistence stays listed but genera
   assert.deepEqual(Rules.removeWorkspace(cleared, "6").workspaces, {})
 })
 
+test("removing a workspace also drops the rules pinned to it, and nothing else", () => {
+  let state = Rules.upsert(Rules.upsert(Rules.emptyState(), "vesktop", "6", false, "Vesktop"), "foot", "2", false, "Foot")
+  state = Rules.setWorkspaceMonitor(state, "6", "desc:LG")
+  const next = Rules.removeWorkspace(state, "6")
+  assert.deepEqual(next.workspaces, {})
+  assert.deepEqual(next.rules.map(r => r["class"]), ["foot"])
+})
+
 test("setting a monitor keeps persistence and vice versa", () => {
   let state = Rules.setWorkspacePersistent(Rules.emptyState(), "6", true)
   state = Rules.setWorkspaceMonitor(state, "6", "desc:Samsung")

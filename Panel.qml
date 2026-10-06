@@ -447,11 +447,42 @@ Panel {
                "Workspace " + workspace + (now ? " → on demand" : " → always present"))
   }
 
-  // Only offered once nothing depends on the workspace: no monitor, not
-  // always present, no pinned app, no open window.
+  // Removing a workspace takes its pinned apps' rules with it, so that is
+  // confirmed first when there is anything to lose. Open windows are left
+  // where they are: Hyprland keeps a workspace alive while it has windows.
+  property string removeTarget: ""
+  readonly property bool removeConfirmOpen: root.removeTarget.length > 0
+
   function removeWorkspace(workspace) {
-    root.apply(Rules.removeWorkspace(root.state, String(workspace)), "", "",
-               "Workspace " + workspace + " removed")
+    var ws = String(workspace)
+    var pinned = Rules.rulesForWorkspace(root.state, ws).length
+    if (pinned === 0 && Rules.workspaceMonitor(root.state, ws).length === 0) {
+      root.apply(Rules.removeWorkspace(root.state, ws), "", "", "Workspace " + ws + " removed")
+      return
+    }
+    root.removeTarget = ws
+    content.forceActiveFocus()
+  }
+
+  readonly property string removeMessage: {
+    if (root.removeTarget.length === 0) return ""
+    var pinned = Rules.rulesForWorkspace(root.state, root.removeTarget).length
+    var bits = []
+    if (pinned > 0) bits.push(pinned === 1 ? "the app pinned to it loses its rule" : pinned + " pinned apps lose their rules")
+    if (Rules.workspaceMonitor(root.state, root.removeTarget).length > 0) bits.push("its monitor pin is dropped")
+    return "Remove workspace " + root.removeTarget + "? " + bits.join(", ").replace(/^./, function(c) { return c.toUpperCase() }) + "."
+  }
+
+  function confirmRemove() {
+    var ws = root.removeTarget
+    root.removeTarget = ""
+    viewTabs.forceActiveFocus()
+    if (ws.length > 0) root.apply(Rules.removeWorkspace(root.state, ws), "", "", "Workspace " + ws + " removed")
+  }
+
+  function cancelRemove() {
+    root.removeTarget = ""
+    viewTabs.forceActiveFocus()
   }
 
   function addWorkspace() {
@@ -728,12 +759,25 @@ Panel {
       return "ok"
     }
 
+    // Drops the workspace and the rules pinned to it, no questions asked:
+    // a command line cannot answer the panel's confirmation.
     function forget(workspace: string): string {
       var ws = String(workspace || "")
       if (!ws.length) return "usage: forget <workspace>"
       if (root.applying) return "busy"
-      if (!(ws in root.state.workspaces)) return "no entry for workspace " + ws
+      if (!(ws in root.state.workspaces) && Rules.rulesForWorkspace(root.state, ws).length === 0)
+        return "nothing to forget for workspace " + ws
       root.apply(Rules.removeWorkspace(root.state, ws), "", "", "Workspace " + ws + " removed")
+      return "ok"
+    }
+
+    // Same as clicking the workspace's remove button: asks in the panel
+    // when there is something to lose.
+    function remove(workspace: string): string {
+      var ws = String(workspace || "")
+      if (!ws.length) return "usage: remove <workspace>"
+      if (root.applying) return "busy"
+      root.removeWorkspace(ws)
       return "ok"
     }
 
@@ -867,6 +911,10 @@ Panel {
 
       Keys.priority: Keys.AfterItem
       Keys.onPressed: function(event) {
+        if (root.removeConfirmOpen) {
+          if (removeConfirm.handleKey(event)) event.accepted = true
+          return
+        }
         if (event.key === Qt.Key_Escape) {
           root.close()
           event.accepted = true
@@ -1419,16 +1467,15 @@ Panel {
                   }
                 }
 
-                // A workspace above the five the bar always shows, with
-                // nothing left on it, can be dropped from the list again.
-                // The slot stays even when the button does not.
+                // A workspace above the five the bar always shows can be
+                // dropped again while it is on demand. The slot stays even
+                // when the button does not, so the rows line up.
                 Button {
                   readonly property bool removable: wsRow.modelData > 5 && !wsRow.persistent
-                    && !wsRow.occupied && wsRow.pinned.length === 0
-                    && Rules.workspaceMonitor(root.state, wsRow.wsName).length === 0
-                    && (wsRow.wsName in root.state.workspaces)
                   iconText: "\u{F0156}"
-                  tooltipText: "Remove this workspace from the list"
+                  tooltipText: wsRow.pinned.length > 0
+                    ? "Remove this workspace and the rules of the apps pinned to it"
+                    : "Remove this workspace from the list"
                   // Same height as the text button beside it, and square.
                   height: persistRef.implicitHeight
                   width: height
@@ -1480,6 +1527,19 @@ Panel {
             font.pixelSize: Style.font.caption
           }
         }
+      }
+
+      ConfirmDialog {
+        id: removeConfirm
+        anchors.fill: parent
+        opened: root.removeConfirmOpen
+        z: 10
+        message: root.removeMessage
+        confirmText: "Remove"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onCanceled: root.cancelRemove()
+        onConfirmed: root.confirmRemove()
       }
 
       // ----------------------------------------------------------- status
