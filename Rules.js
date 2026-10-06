@@ -429,7 +429,7 @@ function toLua(state) {
 
   if (launched.length > 0) {
     lines.push("")
-    lines.push("-- Launch with the session")
+    lines.push("-- Launch at login")
     // Older Omarchy builds may not carry this helper; a missing one must not
     // take the whole config down with it.
     lines.push("if type(o.launch_on_start) == \"function\" then")

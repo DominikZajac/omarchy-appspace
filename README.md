@@ -160,7 +160,7 @@ omarchy-shell dominikzajac.appspace unset spotify
 omarchy-shell dominikzajac.appspace pin 3 "LG Electronics MP59G 0x01010101"
 omarchy-shell dominikzajac.appspace pin 3 ""                 # back to auto
 omarchy-shell dominikzajac.appspace persist 6 on             # always-present workspace
-omarchy-shell dominikzajac.appspace autostart spotify on    # launch with the session
+omarchy-shell dominikzajac.appspace autostart spotify on    # launch at login
 omarchy-shell dominikzajac.appspace view workspaces
 omarchy-shell dominikzajac.appspace select vesktop
 ```

@@ -1143,7 +1143,7 @@ Panel {
               visible: root.selectedRow && !!root.selectedRow.rule
               label: "Launch at startup"
               description: launchable
-                ? "Started with the session, straight onto its workspace"
+                ? "Opens on its workspace when you log in"
                 : "Unavailable: no desktop entry to launch this class from"
               checked: root.selectedRow && Rules.isAutostart(root.state, root.selectedRow.cls)
               // Without a command there is nothing to put in the launch line,
