@@ -549,6 +549,65 @@ function ownAutostartFor(entries, desktopId, execString) {
   return ""
 }
 
+// ------------------------------------------------------------- monitors
+
+// "eDP-1" means nothing to most people; "Laptop screen" does. Connector
+// names follow DRM: eDP (built-in panel), DP, HDMI-A, DVI-I/-D, VGA.
+function connectorLabel(name) {
+  var value = String(name || "")
+  var m = value.match(/^([A-Za-z]+)(?:-[A-Z])?-(\d+)$/)
+  if (!m) return value
+  var kind = m[1].toLowerCase(), n = m[2]
+  if (kind === "edp") return "Laptop screen"
+  if (kind === "dp") return "DisplayPort " + n
+  if (kind === "hdmi") return "HDMI " + n
+  if (kind === "dvi") return "DVI " + n
+  if (kind === "vga") return "VGA " + n
+  return value
+}
+
+// Hyprland's description is "<make> <model> <serial>" in one string. The
+// make can be two words ("LG Electronics", "Dell Inc.", "AU Optronics"); the
+// model is where digits start. Returns the make only, since model strings are
+// mostly codes.
+function monitorVendor(description) {
+  var words = String(description || "").trim().split(/\s+/)
+  var out = []
+  for (var i = 0; i < words.length && out.length < 2; i++) {
+    if (/\d/.test(words[i]) || /^0x/i.test(words[i])) break
+    out.push(words[i])
+  }
+  return out.join(" ")
+}
+
+// One label per monitor, with the position added only when there is more
+// than one: "Laptop screen", "LG Electronics (DisplayPort 2) · right".
+// `monitors` are { name, description, x, y } sorted by x; `index` is the
+// one to label.
+function monitorLabel(monitors, index) {
+  var mon = monitors[index]
+  var isBuiltIn = /^edp/i.test(String(mon.name || ""))
+  var vendor = monitorVendor(mon.description)
+  var label = isBuiltIn ? "Laptop screen"
+    : (vendor.length > 0 ? vendor + " (" + connectorLabel(mon.name) + ")" : connectorLabel(mon.name))
+  if (monitors.length < 2) return label
+
+  var stacked = monitors.every(function(m) { return Number(m.x) === Number(monitors[0].x) })
+  var position
+  if (stacked) {
+    var byY = monitors.slice().sort(function(a, b) { return Number(a.y) - Number(b.y) })
+    var k = byY.indexOf(mon)
+    position = monitors.length === 2 ? (k === 0 ? "top" : "bottom") : (k === 0 ? "top" : (k === byY.length - 1 ? "bottom" : "middle"))
+  } else if (monitors.length === 2) {
+    position = index === 0 ? "left" : "right"
+  } else if (monitors.length === 3) {
+    position = index === 0 ? "left" : (index === 2 ? "right" : "middle")
+  } else {
+    position = String(index + 1) + " of " + monitors.length
+  }
+  return label + " · " + position
+}
+
 // Move an already-open window. `follow = false` keeps focus from jumping to
 // another monitor while you are still assigning rules.
 //
@@ -717,6 +776,9 @@ if (typeof module !== "undefined") {
     classPattern: classPattern,
     luaString: luaString,
     moveWindowLua: moveWindowLua,
+    connectorLabel: connectorLabel,
+    monitorVendor: monitorVendor,
+    monitorLabel: monitorLabel,
     classFromDesktopId: classFromDesktopId,
     declaredClass: declaredClass,
     isFlatpakExec: isFlatpakExec,

@@ -442,3 +442,33 @@ test("autostart entries are parsed, user overrides system, hidden and foreign-de
   assert.equal(Rules.ownAutostartFor(entries, "foot.desktop", "foot"), "")
   assert.equal(Rules.ownAutostartFor([], "foot.desktop", "foot"), "")
 })
+
+// "AU · 1" told nobody which screen that was.
+test("monitors are named by connector and vendor, with a position only when there are several", () => {
+  assert.equal(Rules.connectorLabel("eDP-1"), "Laptop screen")
+  assert.equal(Rules.connectorLabel("DP-2"), "DisplayPort 2")
+  assert.equal(Rules.connectorLabel("HDMI-A-1"), "HDMI 1")
+  assert.equal(Rules.connectorLabel("DVI-D-1"), "DVI 1")
+  assert.equal(Rules.connectorLabel("Virtual-1"), "Virtual-1")
+
+  assert.equal(Rules.monitorVendor("AU Optronics 0x82ED"), "AU Optronics")
+  assert.equal(Rules.monitorVendor("LG Electronics MP59G 0x01010101"), "LG Electronics")
+  assert.equal(Rules.monitorVendor("Dell Inc. U2720Q 7XKFD93"), "Dell Inc.")
+  assert.equal(Rules.monitorVendor("Samsung Electric Company Odyssey G9 H1AK500000"), "Samsung Electric")
+  assert.equal(Rules.monitorVendor(""), "")
+
+  const laptop = { name: "eDP-1", description: "AU Optronics 0x82ED", x: 0, y: 0 }
+  assert.equal(Rules.monitorLabel([laptop], 0), "Laptop screen")
+
+  const two = [laptop, { name: "DP-2", description: "LG Electronics MP59G 0x01010101", x: 1920, y: 0 }]
+  assert.equal(Rules.monitorLabel(two, 0), "Laptop screen · left")
+  assert.equal(Rules.monitorLabel(two, 1), "LG Electronics (DisplayPort 2) · right")
+
+  const three = two.concat([{ name: "HDMI-A-1", description: "Dell Inc. U2720Q X", x: 4480, y: 0 }])
+  assert.equal(Rules.monitorLabel(three, 1), "LG Electronics (DisplayPort 2) · middle")
+  assert.equal(Rules.monitorLabel(three, 2), "Dell Inc. (HDMI 1) · right")
+
+  const stacked = [{ name: "DP-1", description: "LG Electronics A 1", x: 0, y: 0 }, { name: "DP-2", description: "LG Electronics B 2", x: 0, y: 1440 }]
+  assert.equal(Rules.monitorLabel(stacked, 0), "LG Electronics (DisplayPort 1) · top")
+  assert.equal(Rules.monitorLabel(stacked, 1), "LG Electronics (DisplayPort 2) · bottom")
+})

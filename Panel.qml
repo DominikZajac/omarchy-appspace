@@ -87,18 +87,20 @@ Panel {
     for (var i = 0; i < mons.length; i++) {
       var m = mons[i]
       if (!m) continue
-      sortable.push({ x: Number(m.x) || 0, description: String(m.description || ""), name: String(m.name || "") })
+      sortable.push({ x: Number(m.x) || 0, y: Number(m.y) || 0,
+                      description: String(m.description || ""), name: String(m.name || ""),
+                      focused: m.focused === true })
     }
     sortable.sort(function(a, b) { return a.x - b.x })
 
+    // Named by connector and vendor ("Laptop screen", "LG Electronics
+    // (DisplayPort 2) · right"); the value Hyprland matches on stays desc:.
     for (var j = 0; j < sortable.length; j++) {
       var mon = sortable[j]
       if (mon.description.length === 0) continue
-      var position = sortable.length === 2 ? (j === 0 ? "left" : "right") : String(j + 1)
-      var make = mon.description.split(" ")[0]
       out.push({
         value: "desc:" + mon.description,
-        label: make + " · " + position,
+        label: Rules.monitorLabel(sortable, j) + (mon.focused && sortable.length > 1 ? " (this screen)" : ""),
         tooltip: mon.name + " — " + mon.description
       })
     }
@@ -315,12 +317,28 @@ Panel {
       return na < nb ? -1 : (na > nb ? 1 : 0)
     })
 
+    // The list is split into RUNNING, PINNED (a rule, not open) and INSTALLED
+    // by header rows, the way the Bluetooth panel splits CONNECTED from
+    // AVAILABLE. Headers carry the same fields as app rows so delegate
+    // bindings never dereference a missing property.
+    var groups = [
+      { label: "RUNNING", keep: function(a) { return a.running } },
+      { label: "PINNED", keep: function(a) { return !a.running && !!a.rule } },
+      { label: "INSTALLED", keep: function(a) { return !a.running && !a.rule } }
+    ]
     var out = []
-    for (var p = 0; p < apps.length; p++)
-      if (Rules.matches(root.filterText, apps[p])) out.push(apps[p])
+    for (var g = 0; g < groups.length; g++) {
+      var members = []
+      for (var p = 0; p < apps.length; p++)
+        if (groups[g].keep(apps[p]) && Rules.matches(root.filterText, apps[p])) members.push(apps[p])
+      if (members.length === 0) continue
+      out.push({ kind: "header", label: groups[g].label, count: members.length,
+                 cls: "", name: "", icon: "", running: false, rule: null, command: "" })
+      for (var q = 0; q < members.length; q++) out.push(members[q])
+    }
 
     root.rows = out
-    if (!root.rowForKey(root.selectedKey)) root.selectKey(out.length > 0 ? out[0].cls : "")
+    if (!root.rowForKey(root.selectedKey)) root.selectKey(root.firstAppKey())
 
     root.rememberFindings(learned, confirm, respell)
   }
@@ -361,10 +379,21 @@ Panel {
     rulesFile.setText(Rules.toJson(next))
   }
 
+  function isHeader(row) {
+    return !!row && row.kind === "header"
+  }
+
   function rowForKey(key) {
+    if (String(key || "").length === 0) return null
     for (var i = 0; i < root.rows.length; i++)
-      if (root.rows[i].cls === key) return root.rows[i]
+      if (!root.isHeader(root.rows[i]) && root.rows[i].cls === key) return root.rows[i]
     return null
+  }
+
+  function firstAppKey() {
+    for (var i = 0; i < root.rows.length; i++)
+      if (!root.isHeader(root.rows[i])) return root.rows[i].cls
+    return ""
   }
 
   readonly property var selectedRow: root.rowForKey(root.selectedKey)
@@ -373,14 +402,21 @@ Panel {
     root.selectedKey = String(key)
   }
 
+  // Walks app rows only; header rows are skipped over in either direction.
   function moveSelection(delta) {
     if (root.rows.length === 0) return
-    var index = 0
+    var index = -1
     for (var i = 0; i < root.rows.length; i++)
-      if (root.rows[i].cls === root.selectedKey) { index = i; break }
-    var next = index + delta
-    if (next < 0) next = 0
-    if (next > root.rows.length - 1) next = root.rows.length - 1
+      if (!root.isHeader(root.rows[i]) && root.rows[i].cls === root.selectedKey) { index = i; break }
+    var step = delta < 0 ? -1 : 1
+    var next = index
+    for (var n = 0; n < Math.abs(delta); n++) {
+      var probe = next + step
+      while (probe >= 0 && probe < root.rows.length && root.isHeader(root.rows[probe])) probe += step
+      if (probe < 0 || probe >= root.rows.length) break
+      next = probe
+    }
+    if (next < 0) return
     root.selectKey(root.rows[next].cls)
     resultList.positionViewAtIndex(next, ListView.Contain)
   }
@@ -390,7 +426,7 @@ Panel {
     root.rebuild()
     // Typing means the user is hunting for one app, so land on the first
     // result instead of leaving the cursor on whatever was selected before.
-    if (root.filterText.length > 0 && root.rows.length > 0) root.selectKey(root.rows[0].cls)
+    if (root.filterText.length > 0) root.selectKey(root.firstAppKey())
   }
 
   // ------------------------------------------------------------- actions
@@ -529,7 +565,7 @@ Panel {
   function ownAutostartMap() {
     var out = ({})
     for (var i = 0; i < root.rows.length; i++)
-      if (root.rows[i].ownAutostart) out[root.rows[i].cls] = root.rows[i].ownAutostart
+      if (!root.isHeader(root.rows[i]) && root.rows[i].ownAutostart) out[root.rows[i].cls] = root.rows[i].ownAutostart
     return out
   }
 
@@ -1058,14 +1094,27 @@ Panel {
                 required property int index
                 required property var modelData
 
-                readonly property bool current: modelData.cls === root.selectedKey
+                readonly property bool header: modelData.kind === "header"
+                readonly property bool current: !header && modelData.cls === root.selectedKey
 
                 width: ListView.view.width
-                height: Style.space(26)
+                height: header ? Style.space(index === 0 ? 20 : 28) : Style.space(26)
                 radius: Style.cornerRadius
                 color: current ? Util.alpha(root.foreground, 0.10) : "transparent"
 
+                PanelSectionHeader {
+                  visible: rowItem.header
+                  anchors.left: parent.left
+                  anchors.leftMargin: Style.space(8)
+                  anchors.bottom: parent.bottom
+                  anchors.bottomMargin: Style.space(3)
+                  text: rowItem.header ? (modelData.label + " · " + modelData.count) : ""
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
                 Row {
+                  visible: !rowItem.header
                   anchors.fill: parent
                   anchors.leftMargin: Style.space(8)
                   anchors.rightMargin: Style.space(8)
@@ -1119,8 +1168,9 @@ Panel {
 
                 MouseArea {
                   anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
+                  enabled: !rowItem.header
+                  hoverEnabled: !rowItem.header
+                  cursorShape: rowItem.header ? Qt.ArrowCursor : Qt.PointingHandCursor
                   onClicked: root.selectKey(rowItem.modelData.cls)
                 }
               }

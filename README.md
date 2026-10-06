@@ -11,8 +11,8 @@ and if the app is already running its window moves there immediately.
 
 ## Two views
 
-**Apps** — every running window and every installed application, searchable.
-A dot marks what is currently running. Assign a workspace, toggle *Silent* and
+**Apps** — every running window and every installed application, searchable,
+in three sections: *Running*, *Pinned* (has a rule, not open) and *Installed*. Assign a workspace, toggle *Silent* and
 *Launch at startup*, remove the rule.
 
 **Workspaces** — one row per workspace: which monitor it lives on, which apps are
@@ -96,7 +96,8 @@ from the installed-apps row fires on the first launch.
 | No desktop entry at all | | from the running window only |
 
 Monitors are matched by `desc:` (make, model and serial), not by connector, so
-moving a cable to another port keeps the layout.
+moving a cable to another port keeps the layout. They are shown by what you
+would call them: "Laptop screen", "LG Electronics (DisplayPort 2) · right".
 
 *Launch at startup* rides on the rule, so an app is only launched into a
 workspace you have already chosen for it. The generated Lua hooks Hyprland's
@@ -135,7 +136,8 @@ from the installed-apps row fires on the first launch.
 | No desktop entry at all | | from the running window only |
 
 Monitors are matched by `desc:` (make, model and serial), not by connector, so
-moving a cable to another port keeps the layout.
+moving a cable to another port keeps the layout. They are shown by what you
+would call them: "Laptop screen", "LG Electronics (DisplayPort 2) · right".
 
 *Launch at startup* rides on the rule, so an app is only launched into a
 workspace you have already chosen for it. The generated Lua registers it through
