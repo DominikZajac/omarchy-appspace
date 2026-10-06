@@ -8,7 +8,7 @@ import "Rules.js" as Rules
 
 // Bar widget: pick an app or window on the left, set its workspace (and which
 // monitor that workspace lives on) on the right. Writes rules.json, regenerates
-// ~/.config/hypr/appspace.lua and reloads Hyprland.
+// ~/.local/state/omarchy/toggles/hypr/appspace.lua and reloads Hyprland.
 Panel {
   id: root
   moduleName: "dominikzajac.appspace"
@@ -18,8 +18,11 @@ Panel {
   manageIpc: false
 
   readonly property string home: Quickshell.env("HOME")
-  readonly property string rulesPath: root.home + "/.local/state/omarchy/appspace/rules.json"
-  readonly property string luaPath: root.home + "/.config/hypr/appspace.lua"
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || (root.home + "/.local/state")
+  readonly property string rulesPath: root.stateHome + "/omarchy/appspace/rules.json"
+  // Omarchy loads every *.lua in this directory on each config reload (see
+  // default/hypr/toggles.lua), so nothing in ~/.config/hypr has to change.
+  readonly property string luaPath: root.stateHome + "/omarchy/toggles/hypr/appspace.lua"
 
   // Model
   property var state: Rules.emptyState()
@@ -628,20 +631,19 @@ Panel {
     onTriggered: { if (!errorsProc.running) errorsProc.running = true }
   }
 
-  // FileView does not create directories, and on a fresh install
-  // ~/.local/state/omarchy/appspace/ does not exist yet. The Lua module is
-  // seeded as well — with the same output an empty rule set generates — so
-  // the `require("hypr.appspace")` line can go into hyprland.lua straight
-  // after enabling the plugin, without Hyprland first reporting a missing
-  // module. A rules file left behind by the plugin's old name, appws, is
+  // FileView does not create directories, and on a fresh install neither
+  // ~/.local/state/omarchy/appspace/ nor the toggles directory may exist yet.
+  // The Lua module is seeded with the same output an empty rule set
+  // generates. A rules file left behind by the plugin's old name, appws, is
   // adopted so a rename does not lose anyone's rules.
   Process {
     id: bootstrapProc
     command: ["sh", "-c",
-      "mkdir -p \"$1\"; [ -e \"$1/rules.json\" ] || { [ -e \"$4\" ] && mv \"$4\" \"$1/rules.json\"; }; "
+      "mkdir -p \"$1\" \"$(dirname \"$2\")\"; "
+        + "[ -e \"$1/rules.json\" ] || { [ -e \"$4\" ] && mv \"$4\" \"$1/rules.json\"; }; "
         + "[ -e \"$2\" ] || printf '%s' \"$3\" > \"$2\"",
-      "sh", root.home + "/.local/state/omarchy/appspace", root.luaPath,
-      Rules.toLua(Rules.emptyState()), root.home + "/.local/state/omarchy/appws/rules.json"]
+      "sh", root.stateHome + "/omarchy/appspace", root.luaPath,
+      Rules.toLua(Rules.emptyState()), root.stateHome + "/omarchy/appws/rules.json"]
     running: true
   }
 
