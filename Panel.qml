@@ -1429,6 +1429,9 @@ Panel {
                     && (wsRow.wsName in root.state.workspaces)
                   iconText: "\u{F0156}"
                   tooltipText: "Remove this workspace from the list"
+                  // Same height as the text button beside it, and square.
+                  height: persistRef.implicitHeight
+                  width: height
                   bordered: true
                   focusable: removable
                   enabled: removable
