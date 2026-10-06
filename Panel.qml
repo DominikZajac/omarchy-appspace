@@ -1451,24 +1451,21 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
 
-                Item {
+                // Sized by the wider label so "Always" and "On demand" are
+                // the same button, not two widths.
+                Button {
+                  id: persistToggle
                   width: persistRef.implicitWidth
-                  height: persistToggle.implicitHeight
-
-                  Button {
-                    id: persistToggle
-                    anchors.right: parent.right
-                    text: wsRow.persistent ? "Always" : "On demand"
-                    tooltipText: wsRow.persistent
-                      ? "Exists even when empty, so it always shows on the bar"
-                      : "Appears only while something is open on it"
-                    bordered: true
-                    focusable: true
-                    selected: wsRow.persistent
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
-                  }
+                  text: wsRow.persistent ? "Always" : "On demand"
+                  tooltipText: wsRow.persistent
+                    ? "Exists even when empty, so it always shows on the bar"
+                    : "Appears only while something is open on it"
+                  bordered: true
+                  focusable: true
+                  selected: wsRow.persistent
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
                 }
 
                 // A workspace above the five the bar always shows can be
