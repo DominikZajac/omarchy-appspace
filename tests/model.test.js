@@ -20,18 +20,24 @@ test("a schema 2 file, which stored a bare monitor string, loads as a workspace 
   assert.deepEqual(state.workspaces["3"], { monitor: "desc:LG Electronics MP59G", persistent: false })
 })
 
-test("a workspace with neither a monitor nor persistence carries no rule and is dropped", () => {
+// Switching a freshly added workspace to "on demand" used to drop its entry,
+// and with it the row: a workspace above 5 with nothing on it had no reason
+// to be listed. It now stays until removed on purpose.
+test("a workspace with neither a monitor nor persistence stays listed but generates no rule", () => {
   const state = Rules.normalize({
     version: 3,
     rules: [],
-    workspaces: { "4": { monitor: "", persistent: false } }
+    workspaces: { "6": { monitor: "", persistent: false } }
   })
-  assert.deepEqual(state.workspaces, {})
+  assert.deepEqual(state.workspaces, { "6": { monitor: "", persistent: false } })
+  assert.ok(Rules.workspaceIsEmpty(state.workspaces["6"]))
+  assert.match(Rules.toLua(state), /-- Workspace rules[^\n]*\n-- \(none\)/)
 
-  const cleared = Rules.setWorkspacePersistent(
-    Rules.setWorkspaceMonitor(Rules.emptyState(), "4", "desc:X"), "4", false)
-  assert.equal(Rules.workspaceMonitor(cleared, "4"), "desc:X")
-  assert.deepEqual(Rules.setWorkspaceMonitor(cleared, "4", "").workspaces, {})
+  let cleared = Rules.setWorkspacePersistent(Rules.setWorkspaceMonitor(Rules.emptyState(), "6", "desc:X"), "6", false)
+  assert.equal(Rules.workspaceMonitor(cleared, "6"), "desc:X")
+  cleared = Rules.setWorkspaceMonitor(cleared, "6", "")
+  assert.deepEqual(Rules.sortedWorkspaceNames(cleared), ["6"], "still listed")
+  assert.deepEqual(Rules.removeWorkspace(cleared, "6").workspaces, {})
 })
 
 test("setting a monitor keeps persistence and vice versa", () => {

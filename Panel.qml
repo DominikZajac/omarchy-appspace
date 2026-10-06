@@ -447,6 +447,13 @@ Panel {
                "Workspace " + workspace + (now ? " → on demand" : " → always present"))
   }
 
+  // Only offered once nothing depends on the workspace: no monitor, not
+  // always present, no pinned app, no open window.
+  function removeWorkspace(workspace) {
+    root.apply(Rules.removeWorkspace(root.state, String(workspace)), "", "",
+               "Workspace " + workspace + " removed")
+  }
+
   function addWorkspace() {
     var next = root.nextFreeWorkspace
     if (next < 1) {
@@ -718,6 +725,15 @@ Panel {
       var on = String(state || "").toLowerCase() === "on"
       root.apply(Rules.setWorkspacePersistent(root.state, ws, on), "", "",
                  "Workspace " + ws + (on ? " → always present" : " → on demand"))
+      return "ok"
+    }
+
+    function forget(workspace: string): string {
+      var ws = String(workspace || "")
+      if (!ws.length) return "usage: forget <workspace>"
+      if (root.applying) return "busy"
+      if (!(ws in root.state.workspaces)) return "no entry for workspace " + ws
+      root.apply(Rules.removeWorkspace(root.state, ws), "", "", "Workspace " + ws + " removed")
       return "ok"
     }
 
@@ -1328,7 +1344,7 @@ Panel {
               Row {
                 height: parent.height
                 width: parent.width - Style.space(46) - Style.space(190)
-                  - persistToggle.width - parent.spacing * 3
+                  - trailing.width - parent.spacing * 3
                 spacing: Style.space(5)
 
                 Text {
@@ -1376,19 +1392,40 @@ Panel {
                 }
               }
 
-              Button {
-                id: persistToggle
+              Row {
+                id: trailing
                 anchors.verticalCenter: parent.verticalCenter
-                text: wsRow.persistent ? "Always" : "On demand"
-                tooltipText: wsRow.persistent
-                  ? "Exists even when empty, so it always shows on the bar"
-                  : "Appears only while something is open on it"
-                bordered: true
-                focusable: true
-                selected: wsRow.persistent
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
+                spacing: Style.space(6)
+
+                Button {
+                  id: persistToggle
+                  text: wsRow.persistent ? "Always" : "On demand"
+                  tooltipText: wsRow.persistent
+                    ? "Exists even when empty, so it always shows on the bar"
+                    : "Appears only while something is open on it"
+                  bordered: true
+                  focusable: true
+                  selected: wsRow.persistent
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
+                }
+
+                // A workspace above the five the bar always shows, with
+                // nothing left on it, can be dropped from the list again.
+                Button {
+                  visible: wsRow.modelData > 5 && !wsRow.persistent && !wsRow.occupied
+                    && wsRow.pinned.length === 0
+                    && Rules.workspaceMonitor(root.state, wsRow.wsName).length === 0
+                    && (wsRow.wsName in root.state.workspaces)
+                  text: "Remove"
+                  tooltipText: "Drop this workspace from the list"
+                  bordered: true
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.removeWorkspace(wsRow.wsName)
+                }
               }
             }
           }

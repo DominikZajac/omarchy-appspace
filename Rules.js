@@ -71,8 +71,10 @@ function normalize(raw) {
             "monitor": String((value && value["monitor"]) || ""),
             "persistent": !!(value && value["persistent"] === true)
           }
-      // A workspace with neither a monitor nor persistence carries no rule.
-      if (entry["monitor"].length === 0 && !entry["persistent"]) continue
+      // An entry with neither a monitor nor persistence produces no rule, but
+      // it is still a workspace the user added: kept so it stays listed until
+      // it is removed on purpose, instead of vanishing the moment it is
+      // switched to on demand.
       state.workspaces[name] = entry
     }
   }
@@ -309,15 +311,23 @@ function workspacePersistent(state, workspace) {
   return workspaceEntry(state, workspace)["persistent"]
 }
 
-// An entry with no monitor and no persistence carries no rule, so it is
-// dropped rather than written out as an empty stanza.
 function putWorkspace(state, workspace, monitor, persistent) {
   var next = cloneState(state)
-  var name = String(workspace)
-  var value = { "monitor": String(monitor || ""), "persistent": persistent === true }
-  if (value["monitor"].length === 0 && !value["persistent"]) delete next.workspaces[name]
-  else next.workspaces[name] = value
+  next.workspaces[String(workspace)] = { "monitor": String(monitor || ""), "persistent": persistent === true }
   return next
+}
+
+// Forgets a workspace the user added. Rules pointing at it are left alone:
+// they keep listing it, and removing them is a separate decision.
+function removeWorkspace(state, workspace) {
+  var next = cloneState(state)
+  delete next.workspaces[String(workspace)]
+  return next
+}
+
+// A workspace entry that would generate no rule at all.
+function workspaceIsEmpty(entry) {
+  return !entry || (String(entry["monitor"] || "").length === 0 && entry["persistent"] !== true)
 }
 
 function setWorkspaceMonitor(state, workspace, monitor) {
@@ -400,7 +410,9 @@ function toLua(state, ownAutostart) {
   lines.push("if type(hl) ~= \"table\" or type(o) ~= \"table\" then return end")
   lines.push("")
 
-  var names = sortedWorkspaceNames(state)
+  var names = sortedWorkspaceNames(state).filter(function(name) {
+    return !workspaceIsEmpty(state.workspaces[name])
+  })
   lines.push("-- Workspace rules: monitor pinning and always-present workspaces")
   if (names.length === 0) lines.push("-- (none)")
   for (var i = 0; i < names.length; i++) {
@@ -688,6 +700,8 @@ if (typeof module !== "undefined") {
     workspacePersistent: workspacePersistent,
     setWorkspaceMonitor: setWorkspaceMonitor,
     setWorkspacePersistent: setWorkspacePersistent,
+    removeWorkspace: removeWorkspace,
+    workspaceIsEmpty: workspaceIsEmpty,
     rulesForWorkspace: rulesForWorkspace,
     sortedWorkspaceNames: sortedWorkspaceNames,
     toJson: toJson,
