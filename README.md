@@ -113,6 +113,46 @@ Some apps start themselves at login through an XDG autostart entry (1Password
 writes one when its "start at login" setting is on). Launching such an app a
 second time only loses a race and closes on its single-instance lock, so the
 plugin scans `/etc/xdg/autostart` and `~/.config/autostart`: for an app that
+starts itself the toggle says so and stays off, and the generated launch line
+for it waits two seconds for the autostart pass and launches only if the app's
+process is not already running. The app's own entry wins; AppSpace fills in only
+when it is absent. Apps that do not start themselves are launched directly.
+
+## Which apps work
+
+Tested on Omarchy 4 with Hyprland 0.56. "Out of the box" means a rule made
+from the installed-apps row fires on the first launch.
+
+| Kind | Examples | Out of the box? |
+|---|---|---|
+| Native app with a correct `StartupWMClass` | Alacritty, foot, Spotify, Signal, 1Password | yes |
+| No `StartupWMClass`, the desktop id is the class | Nautilus, Evince, mpv, Chromium | yes |
+| `StartupWMClass` with the wrong case | Brave (`brave-browser` → `Brave-browser`), Typora | first launch misses; the rule is respelled when the window appears and fires from then on |
+| Flatpak | Discord | yes, by Flatpak app id |
+| Omarchy TUI launchers (`xdg-terminal-exec --app-id=…`, `omarchy-launch-tui`) | Docker (lazydocker), Disk Usage | yes; note that every `TUI.tile` launcher shares one class and moves as a group |
+| `Terminal=true` entries that open in the default terminal | btop, nvim | not listed: the window carries the terminal's class |
+| Omarchy web apps | ChatGPT, GitHub, Basecamp | yes while the default browser runs on Wayland. With `--ozone-platform=x11` in the browser's flags file every web app is `Brave-browser`, indistinguishable from the browser |
+| Steam, Proton / XWayland | Balatro, Dark Souls | yes, as `steam_app_<id>` |
+| Steam, native Linux | Factorio | first launch misses; the real class is learned while the game runs and the rule moves to it |
+| Wrong `StartupWMClass` | Obsidian, Pinta | launch it once, then assign from the running row; the stale guessed row keeps its rule until you remove it |
+| No desktop entry at all | | from the running window only |
+
+Monitors are matched by `desc:` (make, model and serial), not by connector, so
+moving a cable to another port keeps the layout. They are shown by what you
+would call them: "Laptop screen", "LG Electronics (DisplayPort 2) · right".
+
+*Launch at startup* rides on the rule, so an app is only launched into a
+workspace you have already chosen for it. The generated Lua hooks Hyprland's
+`hyprland.start` event through `o.exec_on_start`; a config reload does not
+re-fire it, so reloading never relaunches your apps. The launch target is the
+Desktop Entry ID rather than a resolved command line, because `uwsm-app`
+resolves entries itself and gets the `.desktop` field codes right. An app with
+no desktop entry has nothing to launch, so the toggle stays inert for it.
+
+Some apps start themselves at login through an XDG autostart entry (1Password
+writes one when its "start at login" setting is on). Launching such an app a
+second time only loses a race and closes on its single-instance lock, so the
+plugin scans `/etc/xdg/autostart` and `~/.config/autostart`: for an app that
 starts itself the toggle says so and stays off, and every generated launch line
 waits two seconds for the autostart pass and checks the app's
 `app-<name>@autostart.service` unit before launching. The order is then

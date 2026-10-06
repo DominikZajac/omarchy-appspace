@@ -261,7 +261,7 @@ test("the launch block is guarded and skips rules with nothing to launch", () =>
   state = Rules.setAutostart(state, "foot", true, "foot.desktop")
   const lua = Rules.toLua(state)
   assert.match(lua, /if type\(o\.exec_on_start\) == "function" then/)
-  assert.match(lua, /o\.exec_on_start\("sleep 2; systemctl --user is-active -q app-foot@autostart\.service \|\| uwsm-app -- foot\.desktop"\)/)
+  assert.match(lua, /o\.exec_on_start\("uwsm-app -- foot\.desktop"\)/, "an app that does not start itself is launched directly")
 })
 
 // Regression: markVerified rebuilt the rule from a subset of its fields, so
@@ -398,35 +398,43 @@ test("a learned alias carries the rule over to the real class", () => {
 // 1Password installs ~/.config/autostart/1password.desktop for itself. At
 // login that entry and our launch line raced within the same second, and
 // whichever lost closed on the single-instance lock.
-test("unit names follow systemd escaping", () => {
-  assert.equal(Rules.autostartUnit("1password.desktop"), "app-1password@autostart.service")
-  assert.equal(Rules.autostartUnit("brave-browser.desktop"), "app-brave\\x2dbrowser@autostart.service")
-  assert.equal(Rules.autostartUnit("org.gnome.Nautilus.desktop"), "app-org.gnome.Nautilus@autostart.service")
-  assert.equal(Rules.systemdEscape(".hidden"), "\\x2ehidden")
+test("only a binary that identifies the app is used to tell whether it is running", () => {
+  assert.equal(Rules.guardBinary("/opt/1Password/1password %U"), "1password")
+  assert.equal(Rules.guardBinary("\"/opt/My App/app\" %F"), "app")
+  assert.equal(Rules.guardBinary("spotify --uri=%u"), "spotify")
+  assert.equal(Rules.guardBinary("/usr/lib/some-very-long-binary-name"), "some-very-long-", "cut to the 15 characters the kernel keeps")
+  assert.equal(Rules.guardBinary("steam steam://rungameid/427520"), "", "a Steam game is not the Steam client")
+  assert.equal(Rules.guardBinary("/usr/bin/flatpak run com.discordapp.Discord"), "")
+  assert.equal(Rules.guardBinary("omarchy-launch-webapp https://chatgpt.com/"), "")
+  assert.equal(Rules.guardBinary("xdg-terminal-exec --app-id=TUI.tile -e lazydocker"), "")
+  assert.equal(Rules.guardBinary(""), "")
 })
 
-test("the launch line waits for the autostart pass and skips an app that started itself", () => {
-  assert.equal(Rules.launchCommand("1password.desktop", ""),
-    "sleep 2; systemctl --user is-active -q app-1password@autostart.service || uwsm-app -- 1password.desktop")
-  assert.equal(Rules.launchCommand("spotify.desktop", "com.spotify.Client.desktop"),
-    "sleep 2; systemctl --user is-active -q app-spotify@autostart.service"
-    + " || systemctl --user is-active -q app-com.spotify.Client@autostart.service || uwsm-app -- spotify.desktop")
-  assert.equal(Rules.launchCommand("foot.desktop", "foot.desktop"),
-    "sleep 2; systemctl --user is-active -q app-foot@autostart.service || uwsm-app -- foot.desktop",
-    "the same entry is not checked twice")
+test("the launch line launches plainly unless the app starts itself", () => {
+  assert.equal(Rules.launchCommand("foot.desktop", []), "uwsm-app -- foot.desktop")
+  assert.equal(Rules.launchCommand("foot.desktop"), "uwsm-app -- foot.desktop")
+  assert.equal(Rules.launchCommand("1password.desktop", ["1password"]),
+    "sleep 2; pgrep -x -- 1password >/dev/null || uwsm-app -- 1password.desktop")
+  assert.equal(Rules.launchCommand("spotify.desktop", ["spotify", "spotify-client", "spotify"]),
+    "sleep 2; pgrep -x -- spotify >/dev/null || pgrep -x -- spotify-client >/dev/null || uwsm-app -- spotify.desktop",
+    "duplicates are dropped")
+})
+
+test("launch targets and process names are shell-quoted", () => {
   // Steam writes "Slay the Spire 2.desktop"; a bare target would be split by the shell.
-  assert.equal(Rules.launchCommand("Slay the Spire 2.desktop", ""),
-    "sleep 2; systemctl --user is-active -q 'app-Slay\\x20the\\x20Spire\\x202@autostart.service' || uwsm-app -- 'Slay the Spire 2.desktop'")
-  assert.equal(Rules.launchCommand("x;rm -rf ~.desktop", ""),
-    "sleep 2; systemctl --user is-active -q 'app-x\\x3brm\\x20\\x2drf\\x20\\x7e@autostart.service' || uwsm-app -- 'x;rm -rf ~.desktop'")
+  assert.equal(Rules.launchCommand("Slay the Spire 2.desktop", []), "uwsm-app -- 'Slay the Spire 2.desktop'")
+  assert.equal(Rules.launchCommand("x;rm -rf ~.desktop", ["a;b"]),
+    "sleep 2; pgrep -x -- 'a;b' >/dev/null || uwsm-app -- 'x;rm -rf ~.desktop'")
 })
 
-test("the generated Lua checks the app's own autostart entry when one is known", () => {
+test("the generated Lua guards only the apps it was told start themselves", () => {
   let state = Rules.setAutostart(
-    Rules.upsert(Rules.emptyState(), "spotify", "4", false, "Spotify"), "spotify", true, "spotify.desktop")
-  const lua = Rules.toLua(state, { "spotify": "com.spotify.Client.desktop" })
-  assert.match(lua, /app-com\.spotify\.Client@autostart\.service/)
-  assert.match(lua, /uwsm-app -- spotify\.desktop/)
+    Rules.upsert(Rules.upsert(Rules.emptyState(), "spotify", "4", false, "Spotify"), "foot", "1", false, "Foot"),
+    "spotify", true, "spotify.desktop")
+  state = Rules.setAutostart(state, "foot", true, "foot.desktop")
+  const lua = Rules.toLua(state, { "spotify": ["spotify"] })
+  assert.match(lua, /o\.exec_on_start\("sleep 2; pgrep -x -- spotify >\/dev\/null \|\| uwsm-app -- spotify\.desktop"\)/)
+  assert.match(lua, /o\.exec_on_start\("uwsm-app -- foot\.desktop"\)/)
 })
 
 test("autostart entries are parsed, user overrides system, hidden and foreign-desktop ones drop out", () => {
@@ -445,6 +453,14 @@ test("autostart entries are parsed, user overrides system, hidden and foreign-de
   assert.equal(Rules.ownAutostartFor(entries, "com.onepassword.OnePassword.desktop", "/opt/1Password/1password %U"), "1password.desktop", "by binary")
   assert.equal(Rules.ownAutostartFor(entries, "myapp.desktop", "\"/opt/My App/app\" %F"), "quoted.desktop", "quoted binary")
   assert.equal(Rules.ownAutostartFor(entries, "foot.desktop", "foot"), "")
+  const withSteam = entries.concat([{ basename: "steam.desktop", exec: "/usr/bin/steam -silent", hidden: false }])
+  assert.equal(Rules.ownAutostartFor(withSteam, "Factorio.desktop", "steam steam://rungameid/427520"), "",
+    "a Steam game does not start itself just because the Steam client does")
+  assert.equal(Rules.ownAutostartFor(withSteam, "steam.desktop", "/usr/bin/steam %U"), "steam.desktop")
+  assert.deepEqual(Rules.guardBinaries(entries, "1password.desktop", "/opt/1Password/1password %U"), ["1password"])
+  assert.deepEqual(Rules.guardBinaries(
+    [{ basename: "sp.desktop", exec: "spotify-launcher --minimized" }], "sp.desktop", "spotify %U"),
+    ["spotify", "spotify-launche"], "the autostart binary is cut the same way")
   assert.equal(Rules.ownAutostartFor([], "foot.desktop", "foot"), "")
 })
 

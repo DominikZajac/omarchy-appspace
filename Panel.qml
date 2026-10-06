@@ -62,6 +62,10 @@ Panel {
   // and whichever lost closed on the app's single-instance lock.
   property var autostartEntries: []
 
+  // Every app row before the search filter is applied: the generated Lua
+  // must not change depending on what happens to be typed in the box.
+  property var allApps: []
+
   // The bar sizes each widget from its root implicitWidth/Height. Without
   // these the slot collapses to 0x0 and the icon never appears on the bar.
   implicitWidth: button.implicitWidth
@@ -252,11 +256,13 @@ Panel {
       if (guessed.length === 0) continue
 
       var own = Rules.ownAutostartFor(root.autostartEntries, entry.id, entry.execString)
+      var guards = own.length > 0 ? Rules.guardBinaries(root.autostartEntries, own, entry.execString) : []
       var row = put({
         cls: guessed,
         name: String(entry.name || guessed),
         icon: root.iconSource(entry.icon),
         ownAutostart: own,
+        guards: guards,
         running: false,
         // Only a live window proves a class. A declared StartupWMClass is a
         // guess like any other: Obsidian declares md.Obsidian and opens as
@@ -272,7 +278,7 @@ Panel {
       if (row.running) {
         row.name = String(entry.name || row.name)
         if (!row.icon) row.icon = root.iconSource(entry.icon)
-        if (!row.ownAutostart) row.ownAutostart = own
+        if (!row.ownAutostart) { row.ownAutostart = own; row.guards = guards }
         // A running window has no command of its own; the desktop entry is the
         // only place a launch line can come from.
         if (!row.command) row.command = Rules.launchTarget(entry.id, entry.command)
@@ -337,6 +343,7 @@ Panel {
       for (var q = 0; q < members.length; q++) out.push(members[q])
     }
 
+    root.allApps = apps
     root.rows = out
     if (!root.rowForKey(root.selectedKey)) root.selectKey(root.firstAppKey())
 
@@ -561,11 +568,13 @@ Panel {
     if (!baselineProc.running) baselineProc.running = true
   }
 
-  // Class -> the app's own autostart entry, for the launch guard in the Lua.
-  function ownAutostartMap() {
+  // Class -> process names to wait for, for apps that start themselves.
+  function guardMap() {
     var out = ({})
-    for (var i = 0; i < root.rows.length; i++)
-      if (!root.isHeader(root.rows[i]) && root.rows[i].ownAutostart) out[root.rows[i].cls] = root.rows[i].ownAutostart
+    for (var i = 0; i < root.allApps.length; i++) {
+      var app = root.allApps[i]
+      if (app.guards && app.guards.length > 0) out[app.cls] = app.guards
+    }
     return out
   }
 
@@ -576,7 +585,7 @@ Panel {
 
     root.state = next
     rulesFile.setText(Rules.toJson(next))
-    luaFile.setText(Rules.toLua(next, root.ownAutostartMap()))
+    luaFile.setText(Rules.toLua(next, root.guardMap()))
     root.rebuild()
 
     if (!reloadProc.running) reloadProc.running = true
