@@ -1392,43 +1392,63 @@ Panel {
                 }
               }
 
+              // Fixed-width slots so the buttons line up across rows whether
+              // or not a row can be removed.
               Row {
                 id: trailing
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(6)
 
-                Button {
-                  id: persistToggle
-                  text: wsRow.persistent ? "Always" : "On demand"
-                  tooltipText: wsRow.persistent
-                    ? "Exists even when empty, so it always shows on the bar"
-                    : "Appears only while something is open on it"
-                  bordered: true
-                  focusable: true
-                  selected: wsRow.persistent
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
+                Item {
+                  width: persistRef.implicitWidth
+                  height: persistToggle.implicitHeight
+
+                  Button {
+                    id: persistToggle
+                    anchors.right: parent.right
+                    text: wsRow.persistent ? "Always" : "On demand"
+                    tooltipText: wsRow.persistent
+                      ? "Exists even when empty, so it always shows on the bar"
+                      : "Appears only while something is open on it"
+                    bordered: true
+                    focusable: true
+                    selected: wsRow.persistent
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: root.toggleWorkspacePersistent(wsRow.wsName)
+                  }
                 }
 
                 // A workspace above the five the bar always shows, with
                 // nothing left on it, can be dropped from the list again.
+                // The slot stays even when the button does not.
                 Button {
-                  visible: wsRow.modelData > 5 && !wsRow.persistent && !wsRow.occupied
-                    && wsRow.pinned.length === 0
+                  readonly property bool removable: wsRow.modelData > 5 && !wsRow.persistent
+                    && !wsRow.occupied && wsRow.pinned.length === 0
                     && Rules.workspaceMonitor(root.state, wsRow.wsName).length === 0
                     && (wsRow.wsName in root.state.workspaces)
-                  text: "Remove"
-                  tooltipText: "Drop this workspace from the list"
+                  iconText: "\u{F0156}"
+                  tooltipText: "Remove this workspace from the list"
                   bordered: true
-                  focusable: true
+                  focusable: removable
+                  enabled: removable
+                  opacity: removable ? 1 : 0
                   foreground: root.foreground
                   fontFamily: root.fontFamily
-                  onClicked: root.removeWorkspace(wsRow.wsName)
+                  onClicked: if (removable) root.removeWorkspace(wsRow.wsName)
                 }
               }
             }
           }
+        }
+
+        // Invisible reference: the wider of the two labels sizes the slot.
+        Button {
+          id: persistRef
+          visible: false
+          text: "On demand"
+          bordered: true
+          fontFamily: root.fontFamily
         }
 
         Item { width: 1; height: Style.space(4) }
@@ -1450,7 +1470,7 @@ Panel {
 
           Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: "Added as always-present, so it stays on the bar."
+            text: "1–5 are always on Omarchy's bar. New ones are added as always-present."
             color: root.foreground
             opacity: 0.45
             font.family: root.fontFamily
