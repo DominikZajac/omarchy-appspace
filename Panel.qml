@@ -968,6 +968,20 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           onChanged: function(value) { root.view = value }
+
+          // ButtonGroup sizes each chip to its label; two tabs read better
+          // as equals. The chips are the Row's Button children (the
+          // Repeater itself has no `text`), measured once they exist.
+          function equalize() {
+            var widest = 0
+            for (var i = 0; i < children.length; i++) {
+              var chip = children[i]
+              if (chip && chip.text !== undefined) widest = Math.max(widest, chip.implicitWidth)
+            }
+            for (var j = 0; j < children.length; j++)
+              if (children[j] && children[j].text !== undefined) children[j].width = widest
+          }
+          Component.onCompleted: Qt.callLater(equalize)
         }
       }
 
