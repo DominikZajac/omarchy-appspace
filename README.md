@@ -26,6 +26,31 @@ confirmation when apps or a monitor are attached. Open windows stay where they a
 
 Switch with the tabs or `Ctrl+Tab`.
 
+## Where an app opens, and starting it at login
+
+Each app has these independent settings, so you can mix them freely:
+
+- **Opens on workspace** — pick a number, or **Any** (the default) to leave the
+  app unplaced. With a number it opens there every time.
+- **Silent** — the app opens without taking focus. It works with or without a
+  workspace: placed, it opens on its workspace in the background; unplaced, it
+  opens where it normally would but does not steal focus.
+- **Custom workspace only at startup** — turns that workspace into a one-time
+  placement: windows the app opens in the first seconds after you log in go there,
+  and everything afterwards opens wherever you put it. This is what you want for a
+  browser you start on workspace 3 at login but use anywhere later. *Advanced* sets
+  how many seconds count (default 20). Measured at login with ten apps starting
+  at once, Steam's first window took up to 38 s and Discord's up to 22 s, so
+  raise it for an app that is slower than 20 s.
+- **Launch at startup** — start the app when you log in. It does not need a
+  workspace: launch it unplaced, or combine it with either setting above.
+
+There is no window count, on purpose: a config reload during login would reset
+it. The seconds are counted from when the compositor started, not from when the
+config was loaded, so changing a setting later in the session never makes the
+next window jump. The generated Lua does this from a `window.open` handler and
+reads the compositor's start time from `/proc`.
+
 ## How it works
 
 `~/.local/state/omarchy/appspace/rules.json` is the single source of truth. From it
@@ -242,12 +267,14 @@ refreshes the plugin registry — a mounted widget keeps running the old code.
 ```sh
 omarchy-shell dominikzajac.appspace list
 omarchy-shell dominikzajac.appspace set vesktop 3 normal     # third argument: normal | silent
+omarchy-shell dominikzajac.appspace set vesktop any normal   # not placed (keeps launch at login)
+omarchy-shell dominikzajac.appspace startup vesktop on 20   # place it only within 20 s of login; "-" keeps the seconds
 omarchy-shell dominikzajac.appspace unset spotify
 omarchy-shell dominikzajac.appspace pin 3 "LG Electronics MP59G 0x01010101"
 omarchy-shell dominikzajac.appspace pin 3 ""                 # back to auto
 omarchy-shell dominikzajac.appspace persist 6 on             # always-present workspace
 omarchy-shell dominikzajac.appspace forget 6                 # drop workspace 6 and its pinned apps' rules
-omarchy-shell dominikzajac.appspace autostart spotify on    # launch at login
+omarchy-shell dominikzajac.appspace autostart spotify on    # launch at login; no workspace needed
 omarchy-shell dominikzajac.appspace view workspaces
 omarchy-shell dominikzajac.appspace select vesktop
 ```
@@ -267,7 +294,9 @@ change. Reverting both files matters too — restoring only the Lua would leave
 
 ## Limitations
 
-- A rule applies every time a window opens, not only the first time.
+- A rule applies every time a window opens, unless *Custom workspace only at startup* is on.
+- *Custom workspace only at startup* places every window the app opens in its
+  first seconds, so a second window you open by hand just after login goes there too.
 - Matching is by window class only. Apps that open several windows under one class
   (Steam: library, friends list, update popups) are moved as a group. Narrowing by
   window title still needs a hand-written rule.
@@ -280,8 +309,13 @@ change. Reverting both files matters too — restoring only the Lua would leave
 - The workspace list mirrors Omarchy's bar: 1–5 always, plus any live workspace up
   to 10, plus anything this plugin has a rule for.
 - `Silent` only governs where a *new* window is placed. Omarchy ships
-  `focus_on_activate = true`, so an already-open window that gets activated (a link
-  clicked in another app) can still pull you to its workspace.
+  `focus_on_activate = true`, so an app that asks for attention later can still
+  pull you to its workspace. Discord does this once it has finished loading. If an
+  app does it and you do not want it to, add a rule for that app yourself in
+  `~/.config/hypr/hyprland.lua`, which is what Omarchy does for Telegram:
+  `o.window("com.discordapp.Discord", { focus_on_activate = false })`. It is left
+  out of AppSpace on purpose: it would also stop a link you click from bringing
+  that app forward, and no delay that works on one machine works on all of them.
 
 ## Files
 

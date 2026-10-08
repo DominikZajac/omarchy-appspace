@@ -4,13 +4,19 @@
 // Nothing here touches QML or the filesystem, so it can be tested standalone
 // and a parsing mistake cannot take the bar down with it.
 
-var SCHEMA_VERSION = 5
+var SCHEMA_VERSION = 6
 
 // ------------------------------------------------------------------ state
 //
 // {
 //   version: 2,
-//   rules:      [ { class, workspace, silent, label } ],   // app  -> workspace
+//   rules:      [ { class, workspace, silent, label, autostart, command,
+//                   startupOnly, startupWindow } ],   // per app
+//               `workspace` may be "" (any): an app can launch at login
+//               without being placed. With `startupOnly` the workspace
+//               applies only to windows the app opens within `startupWindow`
+//               seconds of Hyprland starting. No counter: a window count
+//               would be reset by a config reload during login.
 //   workspaces: { "3": { monitor: "desc:LG ...", persistent: true } },
 //   aliases:    { "steam_app_427520": "com.factorio.Factorio" }
 // }
@@ -23,6 +29,59 @@ function emptyState() {
   return { rules: [], workspaces: {}, aliases: {} }
 }
 
+// Measured at login on a busy session, Steam's first window took up to 38 s and
+// Discord's 22 s; most apps show up within 15 s. 20 covers the common case, and
+// a slow app can be given longer under Advanced.
+var DEFAULT_STARTUP_WINDOW = 20
+
+function clampInt(value, low, high, fallback) {
+  var n = parseInt(value, 10)
+  if (isNaN(n)) return fallback
+  return Math.max(low, Math.min(high, n))
+}
+
+// Every rule field in one place. Rules used to be rebuilt from a subset of
+// their fields in several functions, and each new field was silently dropped
+// by whichever one was forgotten; `ruleWith` copies everything and applies
+// only the changes it is given.
+function makeRule(fields) {
+  var ws = String(fields["workspace"] === undefined || fields["workspace"] === null ? "" : fields["workspace"])
+  var cls = String(fields["class"] || "")
+  return {
+    "class": cls,
+    // "" means any: the app is not placed, it may still launch at login.
+    "workspace": ws,
+    "silent": fields["silent"] === true,
+    "label": String(fields["label"] || cls),
+    // Sticky: set once a real window has been seen using this class. Without
+    // persisting it, closing the app would demote a confirmed rule back to a
+    // guess and wrongly flag it as one that can never fire.
+    "verified": fields["verified"] === true,
+    "autostart": fields["autostart"] === true,
+    // Kept even when autostart is off, so toggling it back on does not
+    // require the desktop entry to still be around.
+    "command": String(fields["command"] || ""),
+    // The workspace is for the login start only, not for every later window.
+    // Meaningless without a workspace, so it is switched off with it.
+    "startupOnly": fields["startupOnly"] === true && ws.length > 0,
+    "startupWindow": clampInt(fields["startupWindow"], 1, 604800, DEFAULT_STARTUP_WINDOW)
+  }
+}
+
+function ruleWith(rule, changes) {
+  var fields = {}
+  for (var key in rule) fields[key] = rule[key]
+  for (var change in changes) fields[change] = changes[change]
+  return makeRule(fields)
+}
+
+// A rule that does not place the app, does not launch it and does not keep
+// it from taking focus carries nothing.
+function isEmptyRule(rule) {
+  return !rule || (String(rule["workspace"] || "").length === 0
+    && rule["autostart"] !== true && rule["silent"] !== true)
+}
+
 function normalize(raw) {
   var state = emptyState()
   if (!raw) return state
@@ -32,27 +91,13 @@ function normalize(raw) {
     var entry = rules[i]
     if (!entry) continue
     var cls = String(entry["class"] || "")
-    var ws = String(entry["workspace"] || "")
-    if (cls.length === 0 || ws.length === 0) continue
+    if (cls.length === 0) continue
     // A rule written for a placeholder class (see declaredClass) can never
     // fire, so it is dropped rather than carried around as a verified rule.
     if (declaredClass(cls) !== cls) continue
-    state.rules.push({
-      "class": cls,
-      "workspace": ws,
-      "silent": entry["silent"] === true,
-      "label": String(entry["label"] || cls),
-      // Sticky: set once a real window has been seen using this class. Without
-      // persisting it, closing the app would demote a confirmed rule back to a
-      // guess and wrongly flag it as one that can never fire.
-      "verified": entry["verified"] === true,
-      // Autostart rides along on the rule rather than living in its own list:
-      // an app you never place is not one you want launched into nowhere.
-      "autostart": entry["autostart"] === true,
-      // Kept even when autostart is off, so toggling it back on does not
-      // require the desktop entry to still be around.
-      "command": String(entry["command"] || "")
-    })
+    var rule = makeRule(entry)
+    if (isEmptyRule(rule)) continue
+    state.rules.push(rule)
   }
   state.rules = sorted(state.rules)
 
@@ -134,6 +179,9 @@ function findCI(rules, cls) {
   return null
 }
 
+// Sets where an app opens. An empty workspace means "any": the app keeps
+// whatever launch-at-login setting it has but is not placed, and a rule with
+// nothing left on it disappears.
 function upsert(state, cls, workspace, silent, label, verified, command) {
   var next = cloneState(state)
   var needle = String(cls).toLowerCase()
@@ -147,17 +195,18 @@ function upsert(state, cls, workspace, silent, label, verified, command) {
     kept.push(next.rules[i])
   }
   var supplied = String(command || "")
-  kept.push({
+  var base = previous || {}
+  var rule = ruleWith(base, {
     "class": String(cls),
-    "workspace": String(workspace),
+    "workspace": String(workspace === undefined || workspace === null ? "" : workspace),
     "silent": silent === true,
     "label": String(label || cls),
     // Confirmation never regresses: editing a rule cannot un-verify a class a
     // real window already proved.
     "verified": verified === true || (!!previous && previous["verified"] === true),
-    "autostart": !!previous && previous["autostart"] === true,
     "command": supplied.length > 0 ? supplied : (previous ? previous["command"] : "")
   })
+  if (!isEmptyRule(rule)) kept.push(rule)
   next.rules = sorted(kept)
   return next
 }
@@ -176,26 +225,46 @@ function isAutostart(state, cls) {
 
 // Takes the command as well: a rule written before commands were recorded has
 // none stored, and the caller knows the desktop entry it is looking at.
-function setAutostart(state, cls, on, command) {
+// Turning it on for an app with no rule creates one with no workspace, so an
+// app can launch at login without being placed; turning it off leaves a rule
+// with no workspace with nothing to say, and it goes.
+function setAutostart(state, cls, on, command, label) {
   var needle = String(cls).toLowerCase()
   var supplied = String(command || "")
   var next = cloneState(state)
   var out = []
+  var found = false
   for (var i = 0; i < next.rules.length; i++) {
     var rule = next.rules[i]
     if (rule["class"].toLowerCase() === needle) {
+      found = true
       var existing = String(rule["command"] || "")
-      rule = {
-        "class": rule["class"], "workspace": rule["workspace"], "silent": rule["silent"],
-        "label": rule["label"], "verified": rule["verified"],
-        "autostart": on === true,
-        "command": supplied.length > 0 ? supplied : existing
-      }
+      rule = ruleWith(rule, { "autostart": on === true, "command": supplied.length > 0 ? supplied : existing })
     }
-    out.push(rule)
+    if (!isEmptyRule(rule)) out.push(rule)
   }
-  next.rules = out
+  if (!found && on === true)
+    out.push(makeRule({ "class": String(cls), "workspace": "", "label": label || cls, "autostart": true, "command": supplied }))
+  next.rules = sorted(out)
   return next
+}
+
+// "Only at startup": the workspace applies to every window the app opens
+// within `seconds` of Hyprland starting, and never again. Needs a workspace;
+// without one there is nothing to apply.
+function setStartupOnly(state, cls, on, seconds) {
+  var needle = String(cls).toLowerCase()
+  var next = cloneState(state)
+  var changed = false
+  next.rules = next.rules.map(function(rule) {
+    if (rule["class"].toLowerCase() !== needle || String(rule["workspace"]).length === 0) return rule
+    changed = true
+    return ruleWith(rule, {
+      "startupOnly": on === true,
+      "startupWindow": seconds === undefined ? rule["startupWindow"] : seconds
+    })
+  })
+  return changed ? next : state
 }
 
 // Quickshell hands over an argv array with the .desktop field codes already
@@ -233,13 +302,7 @@ function markVerified(state, cls) {
   for (var i = 0; i < next.rules.length; i++) {
     var rule = next.rules[i]
     if (rule["class"].toLowerCase() === needle && rule["verified"] !== true) {
-      // Copy every field: rebuilding from a subset silently dropped autostart
-      // and its command, so confirming a class wiped the launch setting.
-      rule = {
-        "class": rule["class"], "workspace": rule["workspace"],
-        "silent": rule["silent"], "label": rule["label"], "verified": true,
-        "autostart": rule["autostart"] === true, "command": String(rule["command"] || "")
-      }
+      rule = ruleWith(rule, { "verified": true })
       changed = true
     }
     out.push(rule)
@@ -275,9 +338,8 @@ function migrateRule(state, from, to) {
   if (source.length === 0 || target.length === 0 || source === target) return null
   var rule = find(state.rules, source)
   if (!rule || findCI(state.rules, target)) return null
-  var next = upsert(remove(state, source), target, rule["workspace"], rule["silent"],
-                    rule["label"], true, rule["command"])
-  if (rule["autostart"] === true) next = setAutostart(next, target, true, rule["command"])
+  var next = remove(state, source)
+  next.rules = sorted(next.rules.concat([ruleWith(rule, { "class": target, "verified": true })]))
   return next
 }
 
@@ -317,14 +379,21 @@ function putWorkspace(state, workspace, monitor, persistent) {
   return next
 }
 
-// Removes a workspace: its monitor and persistence, and every rule that
-// pinned an app to it. Leaving the rules would only bring the row straight
-// back, since a workspace with rules is always listed.
+// Removes a workspace: its monitor and persistence, and the placement of
+// every app pinned to it. Leaving those would only bring the row straight
+// back, since a workspace with rules is always listed. An app that also
+// launches at login keeps that and simply stops being placed.
 function removeWorkspace(state, workspace) {
   var name = String(workspace)
   var next = cloneState(state)
   delete next.workspaces[name]
-  next.rules = next.rules.filter(function(rule) { return String(rule["workspace"]) !== name })
+  var out = []
+  for (var i = 0; i < next.rules.length; i++) {
+    var rule = next.rules[i]
+    if (String(rule["workspace"]) === name) rule = ruleWith(rule, { "workspace": "" })
+    if (!isEmptyRule(rule)) out.push(rule)
+  }
+  next.rules = sorted(out)
   return next
 }
 
@@ -441,14 +510,83 @@ function toLua(state, guards) {
   }
   lines.push("")
 
-  lines.push("-- Application -> workspace")
-  if (state.rules.length === 0) lines.push("-- (none)")
+  lines.push("-- Application -> workspace, and apps kept from taking focus, every time they open")
+  var placed = 0
+  var atStartup = []
   for (var j = 0; j < state.rules.length; j++) {
     var rule = state.rules[j]
+    var pattern = luaString(classPattern(rule["class"]))
+    var comment = "  -- " + luaComment(rule["label"])
+    if (String(rule["workspace"]).length === 0) {
+      // Not placed, but kept from taking focus whenever it opens.
+      if (rule["silent"] === true) {
+        lines.push("o.window(" + pattern + ", { no_initial_focus = true })" + comment)
+        placed++
+      }
+      continue
+    }
+    if (rule["startupOnly"] === true) { atStartup.push(rule); continue }
     var target = rule["workspace"] + (rule["silent"] ? " silent" : "")
-    lines.push("o.window(" + luaString(classPattern(rule["class"]))
-      + ", { workspace = " + luaString(target) + " })"
-      + "  -- " + luaComment(rule["label"]))
+    lines.push("o.window(" + pattern + ", { workspace = " + luaString(target) + " })" + comment)
+    placed++
+  }
+  if (placed === 0) lines.push("-- (none)")
+
+  if (atStartup.length > 0) {
+    lines.push("")
+    lines.push("-- Application -> workspace, only while Hyprland is starting up. Once its")
+    lines.push("-- seconds have passed, an app opens wherever it likes.")
+    lines.push("if type(hl.on) == \"function\" then")
+    lines.push("  local placements = {")
+    for (var q = 0; q < atStartup.length; q++) {
+      var rr = atStartup[q]
+      lines.push("    { class = " + luaString(rr["class"]) + ", workspace = " + luaString(rr["workspace"])
+        + ", follow = " + (rr["silent"] ? "false" : "true")
+        + ", within = " + rr["startupWindow"] + " },"
+        + "  -- " + luaComment(rr["label"]))
+    }
+    lines.push("  }")
+    lines.push("")
+    lines.push("  -- Seconds since the compositor process started, read from /proc. A config")
+    lines.push("  -- reload does not restart that process, so this stays correct across reloads")
+    lines.push("  -- and a change made later in the session never re-arms the placement.")
+    lines.push("  local function seconds_since_start()")
+    lines.push("    local up = io.open(\"/proc/uptime\", \"r\")")
+    lines.push("    if not up then return nil end")
+    lines.push("    local uptime = tonumber((up:read(\"*l\") or \"\"):match(\"^(%S+)\"))")
+    lines.push("    up:close()")
+    lines.push("    local st = io.open(\"/proc/self/stat\", \"r\")")
+    lines.push("    if not st then return nil end")
+    lines.push("    local stat = st:read(\"*l\") or \"\"")
+    lines.push("    st:close()")
+    lines.push("    -- The command name may contain spaces and brackets, so count from the last \")\".")
+    lines.push("    local rest = stat:match(\"^.*%)%s+(.*)$\")")
+    lines.push("    if not uptime or not rest then return nil end")
+    lines.push("    local n = 0")
+    lines.push("    for field in rest:gmatch(\"%S+\") do")
+    lines.push("      n = n + 1")
+    lines.push("      if n == 20 then")
+    lines.push("        local started = tonumber(field)")
+    lines.push("        return started and (uptime - started / 100) or nil")
+    lines.push("      end")
+    lines.push("    end")
+    lines.push("    return nil")
+    lines.push("  end")
+    lines.push("")
+    lines.push("  hl.on(\"window.open\", function(window)")
+    lines.push("    local elapsed = seconds_since_start()")
+    lines.push("    if not elapsed then return end")
+    lines.push("    for _, p in ipairs(placements) do")
+    lines.push("      -- Compared without case: a desktop entry can spell the class differently")
+    lines.push("      -- from the window (brave-browser, Brave-browser) and the first window of the")
+    lines.push("      -- session may arrive before the stored spelling has been corrected.")
+    lines.push("      if (window.class or \"\"):lower() == p.class:lower() and elapsed <= p.within then")
+    lines.push("        hl.dispatch(hl.dsp.window.move({ workspace = p.workspace, follow = p.follow, window = \"address:\" .. window.address }))")
+    lines.push("        return")
+    lines.push("      end")
+    lines.push("    end")
+    lines.push("  end)")
+    lines.push("end")
   }
   var launched = []
   for (var k = 0; k < state.rules.length; k++) {
@@ -779,6 +917,11 @@ if (typeof module !== "undefined") {
     canAutostart: canAutostart,
     isAutostart: isAutostart,
     setAutostart: setAutostart,
+    setStartupOnly: setStartupOnly,
+    makeRule: makeRule,
+    ruleWith: ruleWith,
+    isEmptyRule: isEmptyRule,
+    DEFAULT_STARTUP_WINDOW: DEFAULT_STARTUP_WINDOW,
     shellCommand: shellCommand,
     launchTarget: launchTarget,
     isVerified: isVerified,

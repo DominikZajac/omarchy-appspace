@@ -512,3 +512,227 @@ test("labels cannot break out of the Lua comment they are written into", () => {
   assert.ok(!/\nhl\.exec_cmd/.test(lua), "no line starts with injected code")
   assert.match(lua, /o\.window\("\^evil\\nhl/, "the class is escaped inside the pattern string")
 })
+
+// ------------------------------------------------------------------ launch without a workspace, and startup-only placement
+
+test("an app can launch at login with no workspace, and the rule goes when nothing is left on it", () => {
+  let state = Rules.setAutostart(Rules.emptyState(), "spotify", true, "spotify.desktop", "Spotify")
+  assert.equal(state.rules.length, 1)
+  assert.equal(state.rules[0]["workspace"], "")
+  assert.equal(state.rules[0]["autostart"], true)
+  assert.equal(state.rules[0]["label"], "Spotify")
+  assert.equal(Rules.isAutostart(state, "spotify"), true)
+
+  // No window rule is generated for an app that is not placed, but it launches.
+  const lua = Rules.toLua(state)
+  assert.ok(!/o\.window\(/.test(lua))
+  assert.match(lua, /o\.exec_on_start\("uwsm-app -- spotify\.desktop"\)/)
+
+  assert.deepEqual(Rules.setAutostart(state, "spotify", false).rules, [], "off with no workspace leaves nothing")
+
+  // Placing it later keeps the launch setting, and un-placing keeps it too.
+  state = Rules.upsert(state, "spotify", "4", false, "Spotify")
+  assert.equal(state.rules[0]["workspace"], "4")
+  assert.equal(state.rules[0]["autostart"], true)
+  state = Rules.upsert(state, "spotify", "", false, "Spotify")
+  assert.equal(state.rules.length, 1, "still launches, so the rule stays")
+  assert.equal(state.rules[0]["workspace"], "")
+  state = Rules.setAutostart(state, "spotify", false)
+  assert.deepEqual(state.rules, [])
+})
+
+test("choosing Any for an app that does not launch removes its rule", () => {
+  let state = Rules.upsert(Rules.emptyState(), "foot", "2", false, "Foot")
+  assert.equal(state.rules.length, 1)
+  state = Rules.upsert(state, "foot", "", false, "Foot")
+  assert.deepEqual(state.rules, [])
+})
+
+test("startup-only needs a workspace and carries its time window", () => {
+  let state = Rules.upsert(Rules.emptyState(), "brave", "3", true, "Brave")
+  assert.equal(state.rules[0]["startupOnly"], false)
+  assert.equal(state.rules[0]["startupWindow"], Rules.DEFAULT_STARTUP_WINDOW)
+  assert.equal(Rules.DEFAULT_STARTUP_WINDOW, 20)
+  assert.equal(state.rules[0]["startupCount"], undefined, "there is no window count")
+
+  state = Rules.setStartupOnly(state, "brave", true, 45)
+  assert.deepEqual([state.rules[0]["startupOnly"], state.rules[0]["startupWindow"]], [true, 45])
+  state = Rules.setStartupOnly(state, "brave", true)
+  assert.equal(state.rules[0]["startupWindow"], 45, "leaving the seconds out keeps them")
+
+  // Moving the workspace keeps the setting; removing the workspace switches it off.
+  state = Rules.upsert(state, "brave", "5", true, "Brave")
+  assert.equal(state.rules[0]["startupOnly"], true)
+  state = Rules.setAutostart(state, "brave", true, "brave.desktop")
+  state = Rules.upsert(state, "brave", "", true, "Brave")
+  assert.equal(state.rules[0]["startupOnly"], false)
+  assert.equal(state.rules[0]["autostart"], true)
+
+  // With nothing to apply, the switch is a no-op rather than an error.
+  assert.equal(Rules.setStartupOnly(state, "brave", true), state)
+
+  // Out-of-range values are clamped, junk falls back to the default.
+  let clamped = Rules.upsert(Rules.emptyState(), "x", "1", false, "x")
+  clamped = Rules.setStartupOnly(clamped, "x", true, -5)
+  assert.equal(clamped.rules[0]["startupWindow"], 1)
+  clamped = Rules.setStartupOnly(clamped, "x", true, "abc")
+  assert.equal(clamped.rules[0]["startupWindow"], Rules.DEFAULT_STARTUP_WINDOW)
+})
+
+test("every rule field survives every transformation", () => {
+  let state = Rules.upsert(Rules.emptyState(), "brave", "3", true, "Brave", false, "brave.desktop")
+  state = Rules.setAutostart(state, "brave", true)
+  state = Rules.setStartupOnly(state, "brave", true, 30)
+  const expected = { class: "brave", workspace: "3", silent: true, label: "Brave", autostart: true,
+    command: "brave.desktop", startupOnly: true, startupWindow: 30 }
+  const pick = r => Object.fromEntries(Object.keys(expected).map(k => [k, r[k]]))
+
+  assert.deepEqual(pick(Rules.markVerified(state, "brave").rules[0]), expected)
+  assert.deepEqual(pick(Rules.upsert(state, "brave", "3", true, "Brave").rules[0]), expected)
+  assert.deepEqual(pick(Rules.migrateRule(state, "brave", "Brave-browser").rules[0]), { ...expected, class: "Brave-browser" })
+  assert.deepEqual(pick(Rules.respell(state, "BRAVE").rules[0]), { ...expected, class: "BRAVE" })
+  assert.deepEqual(pick(Rules.normalize(JSON.parse(Rules.toJson(state))).rules[0]), expected)
+})
+
+test("a rule file from before this version loads with startup-only off", () => {
+  const state = Rules.normalize({ version: 5, rules: [{ class: "foot", workspace: "2", silent: true, autostart: true, command: "foot.desktop" }] })
+  const rule = state.rules[0]
+  assert.equal(rule["startupOnly"], false)
+  assert.equal(rule["startupWindow"], 20)
+  assert.equal(rule["autostart"], true)
+  // A rule with no workspace and no launch is meaningless and is not kept.
+  assert.deepEqual(Rules.normalize({ rules: [{ class: "x", workspace: "" }] }).rules, [])
+})
+
+test("removing a workspace unplaces an app that launches at login instead of forgetting it", () => {
+  let state = Rules.setAutostart(Rules.upsert(Rules.emptyState(), "brave", "6", false, "Brave"), "brave", true, "brave.desktop")
+  state = Rules.upsert(state, "foot", "6", false, "Foot")
+  const next = Rules.removeWorkspace(state, "6")
+  assert.deepEqual(next.rules.map(r => [r["class"], r["workspace"], r["autostart"]]), [["brave", "", true]])
+})
+
+test("generated Lua has a permanent rule or a startup placement, never both", () => {
+  let state = Rules.upsert(Rules.emptyState(), "foot", "2", false, "Foot")
+  state = Rules.upsert(state, "evil\nhl.exec_cmd('x')", "3", true, "label\nhl.exec_cmd('x')")
+  state = Rules.setStartupOnly(state, "evil\nhl.exec_cmd('x')", true, 30)
+  const lua = Rules.toLua(state)
+  assert.match(lua, /o\.window\("\^foot\$", \{ workspace = "2" \}\)/)
+  const evilRules = lua.split("\n").filter(l => /o\.window\("\^evil/.test(l))
+  assert.equal(evilRules.length, 0, "a startup-only app has no permanent rule")
+  assert.match(lua, /\{ class = "evil\\nhl\.exec_cmd\('x'\)", workspace = "3", follow = false, within = 30 \},/)
+  assert.ok(!/\nhl\.exec_cmd/.test(lua), "no injected line")
+  assert.ok(!/placements/.test(Rules.toLua(Rules.upsert(Rules.emptyState(), "foot", "2", false, "Foot"))),
+    "no handler when nothing is startup-only")
+})
+
+// The startup handler is run for real against a fake /proc and a fake Hyprland,
+// since a string match cannot tell whether the time arithmetic is right.
+test("startup placement moves every window of the app opened within its seconds, and none after", (t) => {
+  let lua
+  try {
+    lua = childProcess.execFileSync("sh", ["-c", "command -v lua5.4 || command -v lua"], { encoding: "utf8" }).trim()
+  } catch (e) {
+    return t.skip("lua not installed")
+  }
+  let state = Rules.upsert(Rules.emptyState(), "Brave-browser", "3", true, "Brave")
+  state = Rules.setStartupOnly(state, "Brave-browser", true, 20)
+  state = Rules.upsert(state, "mpv", "4", false, "mpv")
+  state = Rules.setStartupOnly(state, "mpv", true, 5)
+  const dir = fs.mkdtempSync("/tmp/appspace-lua-")
+  fs.writeFileSync(path.join(dir, "generated.lua"), Rules.toLua(state))
+  fs.writeFileSync(path.join(dir, "harness.lua"), `
+    local handlers, moves = {}, {}
+    hl = {
+      on = function(event, fn) handlers[event] = fn end,
+      dispatch = function(d) moves[#moves + 1] = d end,
+      window_rule = function() end, workspace_rule = function() end,
+      dsp = { window = { move = function(t) return t end } },
+    }
+    o = { window = function() end, exec_on_start = function() end }
+
+    local uptime, started = 1000.0, 99000  -- compositor started 10 s ago
+    local real_open = io.open
+    io.open = function(name, mode)
+      local content
+      if name == "/proc/uptime" then content = string.format("%.2f 0.00\\n", uptime)
+      elseif name == "/proc/self/stat" then
+        -- the command name has spaces and a bracket, to prove parsing counts from the last ")"
+        content = "123 (Hypr (x) land) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 " .. started .. " 22 23\\n"
+      end
+      if not content then return real_open(name, mode) end
+      return { read = function() return content:gsub("\\n$", "") end, close = function() end }
+    end
+
+    dofile("${path.join(dir, "generated.lua")}")
+    local function open(class, address)
+      handlers["window.open"]({ class = class, address = address })
+    end
+    local function result() local s = {} for _, m in ipairs(moves) do s[#s + 1] = m.window .. "->" .. m.workspace .. ":" .. tostring(m.follow) end return table.concat(s, ",") end
+
+    open("Brave-browser", "0x1")   -- placed
+    open("firefox", "0x2")         -- not a startup app
+    open("Brave-browser", "0x3")   -- placed too: there is no window count
+    open("BRAVE-BROWSER", "0x4")   -- case does not matter
+    open("mpv", "0x5")             -- mpv's window is 5 s and 10 s have passed: not placed
+    print(result())
+
+    uptime = 1000.0 + 15           -- 25 s since start: past Brave's 20 s window
+    moves = {}
+    open("Brave-browser", "0x7")
+    print("late:" .. result())
+
+    -- A config reload re-runs this file. Nothing carries over that could re-arm it.
+    dofile("${path.join(dir, "generated.lua")}")
+    open("Brave-browser", "0x8")
+    print("after reload:" .. result())
+  `)
+  const out = childProcess.execFileSync(lua, [path.join(dir, "harness.lua")], { encoding: "utf8" }).trim().split("\n")
+  assert.equal(out[0], "address:0x1->3:false,address:0x3->3:false,address:0x4->3:false")
+  assert.equal(out[1], "late:", "nothing is placed after the window has passed")
+  assert.equal(out[2], "after reload:", "a reload does not give the app more time")
+})
+
+test("startup placement matches the class without regard to case", (t) => {
+  let lua
+  try { lua = childProcess.execFileSync("sh", ["-c", "command -v lua5.4 || command -v lua"], { encoding: "utf8" }).trim() }
+  catch (e) { return t.skip("lua not installed") }
+  let state = Rules.upsert(Rules.emptyState(), "brave-browser", "3", false, "Brave")
+  state = Rules.setStartupOnly(state, "brave-browser", true, 20)
+  const dir = fs.mkdtempSync("/tmp/appspace-lua-")
+  fs.writeFileSync(path.join(dir, "g.lua"), Rules.toLua(state))
+  fs.writeFileSync(path.join(dir, "h.lua"), `
+    local handler, moves = nil, 0
+    hl = { on = function(_, fn) handler = fn end, dispatch = function() moves = moves + 1 end,
+           window_rule = function() end, workspace_rule = function() end,
+           dsp = { window = { move = function(t) return t end } } }
+    o = { window = function() end, exec_on_start = function() end }
+    local real = io.open
+    io.open = function(n, m)
+      local c = (n == "/proc/uptime") and "100.00 0\\n" or (n == "/proc/self/stat") and "1 (h) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 9500 22\\n" or nil
+      if not c then return real(n, m) end
+      return { read = function() return (c:gsub("\\n$", "")) end, close = function() end }
+    end
+    dofile("${path.join(dir, "g.lua")}")
+    handler({ class = "Brave-browser", address = "0x1" })
+    handler({ class = nil, address = "0x2" })
+    print(moves)
+  `)
+  assert.equal(childProcess.execFileSync(lua, [path.join(dir, "h.lua")], { encoding: "utf8" }).trim(), "1")
+})
+
+test("an unplaced app can still open silently, and that rule disappears when switched off", () => {
+  let state = Rules.upsert(Rules.emptyState(), "spotify", "", true, "Spotify")
+  assert.equal(state.rules.length, 1, "silent alone is worth keeping")
+  const lua = Rules.toLua(state)
+  assert.match(lua, /o\.window\("\^spotify\$", \{ no_initial_focus = true \}\)  -- Spotify/)
+  assert.ok(!/workspace = /.test(lua.split("\n").filter(l => /o\.window/.test(l)).join("\n")), "no workspace in it")
+
+  // Placing it turns the same setting into the ordinary "silent" workspace rule.
+  const placed = Rules.upsert(state, "spotify", "4", true, "Spotify")
+  assert.match(Rules.toLua(placed), /workspace = "4 silent"/)
+  assert.ok(!/no_initial_focus/.test(Rules.toLua(placed)))
+
+  assert.deepEqual(Rules.upsert(state, "spotify", "", false, "Spotify").rules, [])
+  const launches = Rules.setAutostart(state, "spotify", true, "spotify.desktop")
+  assert.equal(Rules.upsert(launches, "spotify", "", false, "Spotify").rules.length, 1, "still launches")
+})

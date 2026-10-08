@@ -111,11 +111,24 @@ Panel {
     return out
   }
 
+  // "Any" is the default: the app is not placed anywhere in particular.
   readonly property var workspaceOptions: {
-    var out = []
+    var out = [{ value: "", label: "Any", tooltip: "Open wherever it normally would" }]
     for (var i = 1; i <= 9; i++) out.push({ value: String(i), label: String(i) })
     return out
   }
+
+  // What the apps list shows next to an app that has a rule.
+  function ruleBadge(rule) {
+    if (!rule) return ""
+    var ws = String(rule["workspace"] || "")
+    if (ws.length > 0 && rule["startupOnly"] === true) return "login → " + ws
+    if (ws.length > 0) return "→ " + ws
+    if (rule["autostart"] === true) return "login"
+    return rule["silent"] === true ? "silent" : ""
+  }
+
+  property bool advancedOpen: false
 
   // The same set Omarchy's bar shows: 1-5 always, plus any live workspace up
   // to 10 (see shell/plugins/bar/widgets/Workspaces.qml). Anything this plugin
@@ -438,34 +451,54 @@ Panel {
 
   // ------------------------------------------------------------- actions
 
+  // An empty workspace is "Any": the app is not placed.
   function assignWorkspace(workspace) {
     var row = root.selectedRow
     if (!row) return
-    var next = Rules.upsert(root.state, row.cls, String(workspace),
+    var ws = String(workspace)
+    if (ws.length === 0 && !row.rule) return
+    var next = Rules.upsert(root.state, row.cls, ws,
                             row.rule ? row.rule["silent"] === true : false, row.name,
                             row.verified === true, row.command)
-    root.apply(next, row.running ? row.address : "", String(workspace),
-               row.cls + " → workspace " + workspace)
+    root.apply(next, row.running && ws.length > 0 ? row.address : "", ws,
+               row.cls + (ws.length > 0 ? " → workspace " + ws : " → any workspace"))
   }
 
   function toggleSilent() {
     var row = root.selectedRow
-    if (!row || !row.rule) return
-    var quiet = !(row.rule["silent"] === true)
-    var next = Rules.upsert(root.state, row.cls, row.rule["workspace"], quiet, row.name,
+    if (!row) return
+    var quiet = !(row.rule && row.rule["silent"] === true)
+    var next = Rules.upsert(root.state, row.cls, row.rule ? row.rule["workspace"] : "", quiet, row.name,
                             row.verified === true, row.command)
     root.apply(next, "", "", row.cls + (quiet ? " → silent" : " → follow focus"))
   }
 
-  function toggleAutostart() {
+  function toggleStartupOnly() {
+    var row = root.selectedRow
+    if (!row || !row.rule || String(row.rule["workspace"]).length === 0) return
+    var on = row.rule["startupOnly"] !== true
+    root.apply(Rules.setStartupOnly(root.state, row.cls, on), "", "",
+               row.cls + (on ? " → placed only at startup" : " → placed every time"))
+  }
+
+  function setStartupSeconds(seconds) {
     var row = root.selectedRow
     if (!row || !row.rule) return
+    root.apply(Rules.setStartupOnly(root.state, row.cls, row.rule["startupOnly"] === true, seconds),
+               "", "", row.cls + " → startup placement lasts " + seconds + " s")
+  }
+
+  // Works for an app with no rule yet: it launches at login without being
+  // placed, and gets a rule only to remember that.
+  function toggleAutostart() {
+    var row = root.selectedRow
+    if (!row) return
     // The row knows the desktop entry's command even when the rule predates
     // command storage, so pass it along instead of refusing the toggle.
     var command = String(row.command || "")
     if (command.length === 0) return
     var on = !Rules.isAutostart(root.state, row.cls)
-    root.apply(Rules.setAutostart(root.state, row.cls, on, command), "", "",
+    root.apply(Rules.setAutostart(root.state, row.cls, on, command, row.name), "", "",
                row.cls + (on ? " → launches at startup" : " → no longer launches at startup"))
   }
 
@@ -784,14 +817,32 @@ Panel {
       if (!name.length) return "usage: autostart <class> <on|off>"
       if (root.applying) return "busy"
       var rule = Rules.findCI(root.state.rules, name)
-      if (!rule) return "no rule for " + name
+      var row = root.rowForKey(rule ? rule["class"] : name)
+      if (!rule && !row) return "no app or rule for " + name
+      var target = rule ? rule["class"] : row.cls
       var on = String(state || "").toLowerCase() === "on"
-      var row = root.rowForKey(rule["class"])
-      var command = row ? String(row.command || "") : ""
-      if (on && command.length === 0 && !Rules.canAutostart(root.state, rule["class"]))
+      var command = row ? String(row.command || "") : (rule ? String(rule["command"] || "") : "")
+      if (on && command.length === 0 && !Rules.canAutostart(root.state, target))
         return "no launch command known for " + name
-      root.apply(Rules.setAutostart(root.state, rule["class"], on, command), "", "",
-                 rule["class"] + (on ? " → launches at startup" : " → no longer launches at startup"))
+      root.apply(Rules.setAutostart(root.state, target, on, command, row ? row.name : target), "", "",
+                 target + (on ? " → launches at startup" : " → no longer launches at startup"))
+      return "ok"
+    }
+
+    // startup <class> <on|off> <seconds>: place the app on its workspace only
+    // for windows it opens within that many seconds of login. "-" keeps the
+    // current number.
+    function startup(cls: string, state: string, seconds: string): string {
+      var name = String(cls || "")
+      if (!name.length) return "usage: startup <class> <on|off> <seconds|->"
+      if (root.applying) return "busy"
+      var rule = Rules.findCI(root.state.rules, name)
+      if (!rule) return "no rule for " + name
+      if (String(rule["workspace"]).length === 0) return name + " has no workspace to apply at startup"
+      var on = String(state || "").toLowerCase() === "on"
+      var secs = parseInt(seconds, 10)
+      root.apply(Rules.setStartupOnly(root.state, rule["class"], on, isNaN(secs) ? undefined : secs),
+                 "", "", rule["class"] + (on ? " → placed only at startup" : " → placed every time"))
       return "ok"
     }
 
@@ -827,6 +878,11 @@ Panel {
       return "ok"
     }
 
+    function advanced(state: string): string {
+      root.advancedOpen = String(state || "").toLowerCase() === "on"
+      return "ok"
+    }
+
     function view(name: string): string {
       var value = String(name || "").toLowerCase()
       if (value !== "apps" && value !== "workspaces") return "usage: view <apps|workspaces>"
@@ -846,27 +902,34 @@ Panel {
       var out = []
       for (var i = 0; i < root.state.rules.length; i++) {
         var r = root.state.rules[i]
-        out.push(r["class"] + " -> " + r["workspace"] + (r["silent"] ? " (silent)" : ""))
+        var ws = String(r["workspace"])
+        var bits = []
+        if (r["silent"]) bits.push("silent")
+        if (ws.length > 0 && r["startupOnly"]) bits.push("only at startup: first " + r["startupWindow"] + " s")
+        if (r["autostart"]) bits.push("launches at login")
+        out.push(r["class"] + " -> " + (ws.length > 0 ? ws : "any") + (bits.length ? " (" + bits.join(", ") + ")" : ""))
       }
       var names = Rules.sortedWorkspaceNames(root.state)
       for (var j = 0; j < names.length; j++) {
         var entry = root.state.workspaces[names[j]]
-        var bits = []
-        if (entry["monitor"].length > 0) bits.push(entry["monitor"])
-        if (entry["persistent"]) bits.push("always present")
-        out.push("workspace " + names[j] + " -> " + bits.join(", "))
+        var parts = []
+        if (entry["monitor"].length > 0) parts.push(entry["monitor"])
+        if (entry["persistent"]) parts.push("always present")
+        out.push("workspace " + names[j] + " -> " + parts.join(", "))
       }
       return out.length ? out.join("\n") : "(no rules)"
     }
 
+    // workspace "any" (or "none") means not placed.
     function set(cls: string, workspace: string, silent: string): string {
       var name = String(cls || "")
       var ws = String(workspace || "")
-      if (!name.length || !ws.length) return "usage: set <class> <workspace> <normal|silent>"
+      if (!name.length || !ws.length) return "usage: set <class> <workspace|any> <normal|silent>"
+      if (ws === "any" || ws === "none") ws = ""
       if (root.applying) return "busy"
       var quiet = String(silent || "").toLowerCase() === "silent"
       root.apply(Rules.upsert(root.state, name, ws, quiet, name), "", "",
-                 name + " → workspace " + ws)
+                 name + (ws.length > 0 ? " → workspace " + ws : " → any workspace"))
       return "ok"
     }
 
@@ -947,7 +1010,7 @@ Panel {
     // The apps view wants a tall list; the workspaces view is a short table and
     // would otherwise sit above a slab of empty space.
     contentHeight: root.view === "apps"
-      ? panel.fittedContentHeight(Style.space(540))
+      ? panel.fittedContentHeight(Style.space(620))
       : panel.fittedContentHeight(header.implicitHeight + Style.space(10)
           + workspacesView.implicitHeight + Style.space(8) + statusRow.height)
 
@@ -1167,8 +1230,8 @@ Panel {
                   Text {
                     id: badge
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: !!rowItem.modelData.rule
-                    text: visible ? ("→ " + rowItem.modelData.rule["workspace"]) : ""
+                    visible: root.ruleBadge(rowItem.modelData.rule).length > 0
+                    text: root.ruleBadge(rowItem.modelData.rule)
                     color: Color.accent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -1195,21 +1258,58 @@ Panel {
             color: Util.alpha(root.foreground, 0.12)
           }
 
-          Column {
+          // Scrolls if every control is showing and the pane is short.
+          Flickable {
+            id: detailFlick
             anchors.left: divider.right
             anchors.leftMargin: Style.space(14)
             anchors.right: parent.right
             anchors.top: parent.top
-            spacing: Style.space(10)
+            anchors.bottom: parent.bottom
             visible: !!root.selectedRow
+            contentWidth: width
+            contentHeight: detailColumn.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
 
-            Text {
+          Column {
+            id: detailColumn
+            width: detailFlick.width
+            spacing: Style.space(8)
+
+            Item {
               width: parent.width
-              text: root.selectedRow ? root.selectedRow.name : ""
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.heading
-              elide: Text.ElideRight
+              height: Math.max(appTitle.implicitHeight, removeButton.implicitHeight)
+
+              Text {
+                id: appTitle
+                anchors.left: parent.left
+                anchors.right: removeButton.visible ? removeButton.left : parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.selectedRow ? root.selectedRow.name : ""
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.heading
+                elide: Text.ElideRight
+              }
+
+              Button {
+                id: removeButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !!(root.selectedRow && root.selectedRow.rule)
+                text: "Remove rule"
+                tooltipText: "Forget everything set for this app"
+                bordered: true
+                focusable: true
+                // Color.urgent is the palette's red, the same one ConfirmDialog
+                // paints destructive choices with.
+                foreground: Color.urgent
+                accent: Color.urgent
+                fontFamily: root.fontFamily
+                onClicked: root.removeRule()
+              }
             }
 
             Row {
@@ -1259,7 +1359,7 @@ Panel {
             Text {
               width: parent.width
               visible: root.selectedRow && !root.selectedRow.verified && root.selectedRow.orphan !== true
-              text: "Derived from the .desktop file and may be wrong. Confirmed once the app runs."
+              text: "Guessed from the .desktop file. Confirmed once the app runs."
               color: root.foreground
               opacity: 0.5
               font.family: root.fontFamily
@@ -1270,7 +1370,7 @@ Panel {
             PanelSeparator { width: parent.width; foreground: root.foreground }
 
             PanelSectionHeader {
-              text: "ASSIGN TO WORKSPACE"
+              text: "OPENS ON WORKSPACE"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -1278,8 +1378,9 @@ Panel {
             ButtonGroup {
               width: parent.width
               options: root.workspaceOptions
-              // Only a real rule highlights a chip. Highlighting the window's
-              // current workspace would read as "a rule exists" when none does.
+              // Only a real rule highlights a workspace chip. Highlighting the
+              // window's current workspace would read as "a rule exists" when
+              // none does; with no placement the highlight is on "Any".
               value: root.selectedRow && root.selectedRow.rule
                 ? String(root.selectedRow.rule["workspace"]) : ""
               foreground: root.foreground
@@ -1289,8 +1390,10 @@ Panel {
 
             Text {
               width: parent.width
-              visible: root.selectedRow && !root.selectedRow.rule
-              text: "No rule yet — pick a workspace to create one."
+              readonly property bool placed: !!(root.selectedRow && root.selectedRow.rule
+                && String(root.selectedRow.rule["workspace"]).length > 0)
+              visible: root.selectedRow && !placed
+              text: "Not placed: it opens wherever it normally would."
               color: root.foreground
               opacity: 0.45
               font.family: root.fontFamily
@@ -1300,14 +1403,18 @@ Panel {
             PanelSeparator {
               width: parent.width
               foreground: root.foreground
-              visible: root.selectedRow && !!root.selectedRow.rule
+              visible: !!root.selectedRow
             }
 
             Toggle {
+              readonly property bool placed: !!(root.selectedRow && root.selectedRow.rule
+                && String(root.selectedRow.rule["workspace"]).length > 0)
               width: parent.width
-              visible: root.selectedRow && !!root.selectedRow.rule
+              visible: !!root.selectedRow
               label: "Silent"
-              description: "Opens there without pulling focus"
+              description: placed
+                ? "Opens there without pulling focus"
+                : "Opens without taking focus, wherever it opens"
               checked: root.selectedRow && root.selectedRow.rule
                 ? root.selectedRow.rule["silent"] === true : false
               foreground: root.foreground
@@ -1325,12 +1432,12 @@ Panel {
                 && String(root.selectedRow.ownAutostart || "").length > 0
 
               width: parent.width
-              visible: root.selectedRow && !!root.selectedRow.rule
+              visible: !!root.selectedRow
               label: "Launch at startup"
               description: startsItself
                 ? (root.selectedRow.name + " already starts itself when you log in, from its own settings")
                 : launchable
-                  ? "Opens on its workspace when you log in"
+                  ? "Starts when you log in"
                   : "Unavailable: no desktop entry to launch this class from"
               checked: root.selectedRow && Rules.isAutostart(root.state, root.selectedRow.cls)
               // Without a command there is nothing to put in the launch line,
@@ -1342,25 +1449,89 @@ Panel {
               onClicked: root.toggleAutostart()
             }
 
-            Item {
+            Toggle {
+              readonly property bool placed: !!(root.selectedRow && root.selectedRow.rule
+                && String(root.selectedRow.rule["workspace"]).length > 0)
+              readonly property bool only: !!(root.selectedRow && root.selectedRow.rule
+                && root.selectedRow.rule["startupOnly"] === true)
               width: parent.width
-              height: removeButton.implicitHeight
-              visible: root.selectedRow && !!root.selectedRow.rule
+              visible: root.selectedRow && placed
+              label: "Custom workspace only at startup"
+              description: only
+                ? "Works only at startup"
+                : "Works every time you open the app"
+              checked: only
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.toggleStartupOnly()
+            }
+
+            // For the rare app where one window is not the whole startup (a
+            // browser that reopens several), or the default time is off. The
+            // numbers read as a sentence so nothing needs explaining.
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+              visible: root.selectedRow && !!root.selectedRow.rule && root.selectedRow.rule["startupOnly"] === true
 
               Button {
-                id: removeButton
-                anchors.right: parent.right
-                text: "Remove rule"
-                bordered: true
+                text: root.advancedOpen ? "Advanced  \u25BE" : "Advanced  \u25B8"
+                bordered: false
                 focusable: true
-                // Color.urgent is the palette's red, the same one ConfirmDialog
-                // paints destructive choices with.
-                foreground: Color.urgent
-                accent: Color.urgent
+                foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: root.removeRule()
+                onClicked: root.advancedOpen = !root.advancedOpen
+              }
+
+              Row {
+                visible: root.advancedOpen
+                spacing: Style.space(7)
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Place every window it opens within"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  from: 5
+                  to: 600
+                  stepSize: 5
+                  fieldWidth: Style.space(62)
+                  value: root.selectedRow && root.selectedRow.rule ? root.selectedRow.rule["startupWindow"] : 20
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onModified: function(v) {
+                    if (root.selectedRow && root.selectedRow.rule && v !== root.selectedRow.rule["startupWindow"])
+                      root.setStartupSeconds(v)
+                  }
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "s of login"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+              }
+
+              Text {
+                visible: root.advancedOpen
+                width: parent.width
+                text: "Raise it for a slow app: Steam can take 40 s or more to show its first window."
+                color: root.foreground
+                opacity: 0.5
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
               }
             }
+
+          }
           }
         }
       }
@@ -1497,7 +1668,7 @@ Panel {
                     Text {
                       id: pinnedLabel
                       anchors.centerIn: parent
-                      text: pinnedChip.modelData["class"]
+                      text: pinnedChip.modelData["class"] + (pinnedChip.modelData["startupOnly"] === true ? " · login" : "")
                       color: root.foreground
                       opacity: 0.8
                       font.family: root.fontFamily
