@@ -321,6 +321,10 @@ Panel {
     for (var n = 0; n < order.length; n++) {
       var item = byClass[order[n]]
       item.rule = Rules.findCI(root.state.rules, item.cls)
+      // A row built from a desktop entry carries the entry's guess of the
+      // class. Once a rule exists its spelling is the one to keep, or editing
+      // the rule of an app that is not running would rewrite it to the guess.
+      if (item.rule && !item.running) item.cls = item.rule["class"]
       if (item.rule && item.rule["verified"] === true) item.verified = true
       if (!item.command && item.rule) item.command = String(item.rule["command"] || "")
       apps.push(item)
