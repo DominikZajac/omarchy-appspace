@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dominikzajac.appspace",
   "name": "AppSpace",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": "Dominik Zajac",
   "license": "MIT",
   "description": "Manage where apps open: which workspace, and on which monitor.",
