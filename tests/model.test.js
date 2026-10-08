@@ -736,3 +736,14 @@ test("an unplaced app can still open silently, and that rule disappears when swi
   const launches = Rules.setAutostart(state, "spotify", true, "spotify.desktop")
   assert.equal(Rules.upsert(launches, "spotify", "", false, "Spotify").rules.length, 1, "still launches")
 })
+
+// ~/.local/share/applications/bssh.desktop held only "Hidden=true": launching it
+// failed with "Key 'Type' is missing" at every login.
+test("apps hidden by a user stub are recognised by desktop id", () => {
+  const hidden = Rules.parseHiddenEntries("bssh.desktop\n\nbvnc.desktop\n  avahi-discover.desktop  \n")
+  assert.equal(hidden["bssh"], true)
+  assert.equal(hidden["bvnc"], true)
+  assert.equal(hidden["avahi-discover"], true)
+  assert.equal(hidden["foot"], undefined)
+  assert.deepEqual(Rules.parseHiddenEntries(""), {})
+})

@@ -62,6 +62,10 @@ Panel {
   // and whichever lost closed on the app's single-instance lock.
   property var autostartEntries: []
 
+  // Desktop ids hidden by a user stub (Hidden=true). Such an app cannot be
+  // launched by its entry, so it is not offered.
+  property var hiddenEntries: ({})
+
   // Every app row before the search filter is applied: the generated Lua
   // must not change depending on what happens to be typed in the box.
   property var allApps: []
@@ -258,6 +262,7 @@ Panel {
     for (var j = 0; j < entries.length; j++) {
       var entry = entries[j]
       if (!entry || entry.noDisplay === true) continue
+      if (root.hiddenEntries[Rules.classFromDesktopId(entry.id)] === true) continue
       var derived = Rules.classFromEntry(entry.startupClass, entry.execString, entry.id,
                                          root.browserPrefix)
       // A TUI that opens inside the default terminal gets the terminal's class,
@@ -676,6 +681,7 @@ Panel {
     try { Hyprland.refreshToplevels() } catch (e) {}
     if (!steamProbe.running) steamProbe.running = true
     if (!autostartProbe.running) autostartProbe.running = true
+    if (!hiddenProbe.running) hiddenProbe.running = true
     root.rebuild()
   }
 
@@ -758,6 +764,21 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         root.autostartEntries = Rules.parseAutostart(text, Quickshell.env("XDG_CURRENT_DESKTOP") || "Hyprland")
+        root.rebuild()
+      }
+    }
+  }
+
+  Process {
+    id: hiddenProbe
+    command: ["sh", "-c",
+      "for f in \"${XDG_DATA_HOME:-$HOME/.local/share}\"/applications/*.desktop; do "
+      + "[ -e \"$f\" ] || continue; grep -qi '^Hidden=true' \"$f\" && basename \"$f\"; done; true"]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.hiddenEntries = Rules.parseHiddenEntries(text)
         root.rebuild()
       }
     }

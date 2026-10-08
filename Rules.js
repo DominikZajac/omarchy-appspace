@@ -650,6 +650,20 @@ function launchCommand(target, processNames) {
   return "sleep 2; " + checks.join(" || ") + " || " + launch
 }
 
+// A user can hide an installed app by dropping a stub with `Hidden=true` over
+// it in ~/.local/share/applications. Launchers resolve that stub first, and it
+// is not a valid entry on its own: launching it fails with "Key 'Type' is
+// missing". The probe prints one basename per such file.
+function parseHiddenEntries(text) {
+  var out = ({})
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var name = lines[i].trim()
+    if (name.length > 0) out[classFromDesktopId(name)] = true
+  }
+  return out
+}
+
 // Parses the probe output: one tab-separated line per autostart file,
 // system directory first, user directory last so it overrides by basename.
 //   basename \t Hidden \t OnlyShowIn \t NotShowIn \t Exec
@@ -945,6 +959,7 @@ if (typeof module !== "undefined") {
     guardBinaries: guardBinaries,
     launchCommand: launchCommand,
     parseAutostart: parseAutostart,
+    parseHiddenEntries: parseHiddenEntries,
     ownAutostartFor: ownAutostartFor,
     classPattern: classPattern,
     luaString: luaString,
