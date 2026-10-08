@@ -1162,6 +1162,7 @@ Panel {
 
           iconComponent: Component {
             Text {
+              textFormat: Text.PlainText
               text: "\u{F0A07}"
               color: root.foreground
               font.family: root.fontFamily
@@ -1178,6 +1179,7 @@ Panel {
               visible: header.panel.updateInfo.text.length > 0
 
               Text {
+                textFormat: Text.PlainText
                 anchors.right: parent.right
                 text: header.panel.updateInfo.text
                 color: header.panel.updateInfo.canUpdate ? Color.accent : Qt.darker(header.panel.foreground, 1.4)
@@ -1283,6 +1285,7 @@ Panel {
             clip: true
 
             Text {
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               visible: root.rows.length === 0
               text: "Nothing matches"
@@ -1335,6 +1338,7 @@ Panel {
                   // A dot instead of a "not running" caption: same information,
                   // one glance, no second line of text under every row.
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     width: Style.space(6)
                     text: rowItem.modelData.running ? "•" : ""
@@ -1355,6 +1359,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - Style.space(6) - parent.spacing * 3
                       - (rowItem.modelData.icon.length > 0 ? Style.space(15) : 0)
@@ -1368,6 +1373,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     id: badge
                     anchors.verticalCenter: parent.verticalCenter
                     visible: root.ruleBadge(rowItem.modelData.rule).length > 0
@@ -1422,6 +1428,7 @@ Panel {
               height: Math.max(appTitle.implicitHeight, removeButton.implicitHeight)
 
               Text {
+                textFormat: Text.PlainText
                 id: appTitle
                 anchors.left: parent.left
                 anchors.right: removeButton.visible ? removeButton.left : parent.right
@@ -1457,6 +1464,7 @@ Panel {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.selectedRow ? ("class: " + root.selectedRow.cls) : ""
                 color: root.foreground
@@ -1474,6 +1482,7 @@ Panel {
                 color: Util.alpha(sure ? Color.accent : root.foreground, 0.14)
 
                 Text {
+                  textFormat: Text.PlainText
                   id: chip
                   anchors.centerIn: parent
                   text: parent.sure ? "verified" : "guessed class"
@@ -1486,6 +1495,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.selectedRow && root.selectedRow.orphan === true
               text: "No window and no installed app uses this class, so this rule can never fire. "
@@ -1497,6 +1507,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.selectedRow && !root.selectedRow.verified && root.selectedRow.orphan !== true
               text: "Guessed from the .desktop file. Confirmed once the app runs."
@@ -1529,6 +1540,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               readonly property bool placed: !!(root.selectedRow && root.selectedRow.rule
                 && String(root.selectedRow.rule["workspace"]).length > 0)
@@ -1628,6 +1640,7 @@ Panel {
                 spacing: Style.space(7)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: "Place every window it opens within"
                   color: root.foreground
@@ -1651,6 +1664,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: "s of login"
                   color: root.foreground
@@ -1660,6 +1674,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.advancedOpen
                 width: parent.width
                 text: "Raise it for a slow app: Steam can take 40 s or more to show its first window."
@@ -1696,6 +1711,7 @@ Panel {
           spacing: Style.space(10)
 
           Text {
+            textFormat: Text.PlainText
             width: Style.space(46)
             text: "WS"
             color: root.foreground
@@ -1705,6 +1721,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: Style.space(190)
             text: "MONITOR"
             color: root.foreground
@@ -1714,6 +1731,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: "PINNED APPS"
             color: root.foreground
             opacity: 0.45
@@ -1747,6 +1765,7 @@ Panel {
                 spacing: Style.space(5)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: wsRow.occupied ? "\u2022" : ""
                   width: Style.space(6)
@@ -1756,6 +1775,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: wsRow.wsName
                   color: root.foreground
@@ -1784,6 +1804,7 @@ Panel {
                 spacing: Style.space(5)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   visible: wsRow.pinned.length === 0
                   text: "\u2014"
@@ -1806,6 +1827,7 @@ Panel {
                     color: Util.alpha(root.foreground, 0.10)
 
                     Text {
+                      textFormat: Text.PlainText
                       id: pinnedLabel
                       anchors.centerIn: parent
                       text: pinnedChip.modelData["class"] + (pinnedChip.modelData["startupOnly"] === true ? " · login" : "")
@@ -1904,6 +1926,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.verticalCenter: parent.verticalCenter
             text: "1–5 are always on Omarchy's bar. New ones are added as always-present."
             color: root.foreground
@@ -1936,6 +1959,7 @@ Panel {
         height: Style.space(16)
 
         Text {
+          textFormat: Text.PlainText
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
           width: parent.width

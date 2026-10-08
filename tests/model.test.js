@@ -847,3 +847,21 @@ test("update-check.sh answers current, available, unmanaged and unknown from rea
   check(plugin)
   assert.equal(git(plugin, "count-objects", "-v") + git(plugin, "for-each-ref"), before)
 })
+
+// A window's class (its app_id) is chosen by the client, and the panel lists it.
+// Qt's default text format auto-detects markup, so a class like
+// <img src="http://..."> made the shell fetch that URL. Every Text element in the
+// panel therefore pins plain text; Omarchy's own components already do.
+test("every Text element in the panel renders plain text", () => {
+  const qml = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  const offenders = []
+  for (const m of qml.matchAll(/(?<![A-Za-z0-9_.])Text\s*\{/g)) {
+    let depth = 1, i = m.index + m[0].length
+    while (depth > 0 && i < qml.length) { depth += (qml[i] === "{") - (qml[i] === "}"); i++ }
+    const block = qml.slice(m.index, i)
+    if (!/textFormat:\s*Text\.PlainText/.test(block)) {
+      offenders.push("line " + (qml.slice(0, m.index).split("\n").length))
+    }
+  }
+  assert.deepEqual(offenders, [], "Text without textFormat: Text.PlainText")
+})
