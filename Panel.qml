@@ -82,6 +82,32 @@ Panel {
   readonly property color foreground: root.bar ? root.bar.foreground : Color.foreground
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
 
+  // ------------------------------------------------------------- updates
+  //
+  // Is a newer version published? Read-only: update-check.sh asks the plugin's
+  // own remote for its HEAD and compares it with the installed commit. Nothing
+  // is ever installed from here; the Update button opens Omarchy's own
+  // updater in a terminal, which shows the diff and asks first.
+  property string updateState: "pending"
+  property real updateCheckedAt: 0
+  property real nowMs: Date.now()
+  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/+$/, "")
+  readonly property string updateScript: root.pluginDir + "/update-check.sh"
+  readonly property var updateInfo: Rules.updateSummary(
+    { state: root.updateState, checkedAt: root.updateCheckedAt }, root.nowMs, Rules.updateCheckEnabled(root.state))
+
+  function checkForUpdates() {
+    if (updateProbe.running) return
+    root.updateState = "checking"
+    updateProbe.running = true
+  }
+
+  function runUpdate() {
+    root.close()
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+      Rules.shellCommand(["sh", root.updateScript, "apply", root.moduleName, root.pluginDir])])
+  }
+
   // ------------------------------------------------------------- monitors
 
   // Hyprland matches monitors by `desc:` (make + model + serial) rather than
@@ -812,6 +838,43 @@ Panel {
     onTriggered: { if (!errorsProc.running) errorsProc.running = true }
   }
 
+  Process {
+    id: updateProbe
+    command: ["sh", root.updateScript, "check", root.pluginDir]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.updateState = Rules.parseUpdateProbe(text)
+        root.updateCheckedAt = Date.now()
+        root.nowMs = root.updateCheckedAt
+      }
+    }
+  }
+
+  // Twenty seconds after the shell starts, then once a day. Not at the very
+  // start: the shell is busy with login, and nothing is lost by waiting.
+  Timer {
+    interval: 20000
+    running: true
+    repeat: false
+    onTriggered: if (Rules.updateCheckEnabled(root.state)) root.checkForUpdates()
+  }
+
+  Timer {
+    interval: 86400000
+    running: true
+    repeat: true
+    onTriggered: if (Rules.updateCheckEnabled(root.state)) root.checkForUpdates()
+  }
+
+  // Keeps "checked 23 minutes ago" honest while the panel stays open.
+  Timer {
+    interval: 30000
+    running: root.opened
+    repeat: true
+    onTriggered: root.nowMs = Date.now()
+  }
+
   // FileView does not create directories, and on a fresh install neither
   // ~/.local/state/omarchy/appspace/ nor the toggles directory may exist yet.
   // The Lua module is seeded with the same output an empty rule set
@@ -900,6 +963,22 @@ Panel {
       if (!ws.length) return "usage: remove <workspace>"
       if (root.applying) return "busy"
       root.removeWorkspace(ws)
+      return "ok"
+    }
+
+    // updates <on|off|check|update>: on and off turn the daily check on and
+    // off (a manual check still works), check asks now, update opens
+    // Omarchy's updater in a terminal.
+    function updates(action: string): string {
+      var what = String(action || "").toLowerCase()
+      if (what === "check") { root.checkForUpdates(); return "ok" }
+      if (what === "update") { root.runUpdate(); return "ok" }
+      if (what !== "on" && what !== "off") return "usage: updates <on|off|check|update>"
+      // A setting, not a Hyprland rule: written straight to rules.json with no
+      // reload and no rollback dance, like the other bookkeeping.
+      var next = Rules.setUpdateCheck(root.state, what === "on")
+      root.state = next
+      rulesFile.setText(Rules.toJson(next))
       return "ok"
     }
 
@@ -1001,6 +1080,7 @@ Panel {
     // next open.
     root.removeTarget = ""
     if (!root.opened) return
+    root.nowMs = Date.now()
     root.filterText = ""
     root.status = ""
     root.statusError = false
@@ -1067,6 +1147,7 @@ Panel {
       // left, the panel's name, and one dimmed uppercase line of status.
       Column {
         id: header
+        readonly property var panel: root
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -1085,6 +1166,40 @@ Panel {
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
+            }
+          }
+
+          // The update status and its one button. A trailingControl's `root`
+          // is the hero, not the panel, so it reaches the panel through
+          // `header.panel`.
+          trailingControl: Component {
+            Column {
+              spacing: Style.space(2)
+              visible: header.panel.updateInfo.text.length > 0
+
+              Text {
+                anchors.right: parent.right
+                text: header.panel.updateInfo.text
+                color: header.panel.updateInfo.canUpdate ? Color.accent : Qt.darker(header.panel.foreground, 1.4)
+                font.family: header.panel.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: header.panel.updateInfo.canUpdate
+              }
+
+              Button {
+                anchors.right: parent.right
+                visible: header.panel.updateInfo.canCheck
+                text: header.panel.updateInfo.canUpdate ? "Update\u2026" : "Check now"
+                tooltipText: header.panel.updateInfo.canUpdate
+                  ? "Opens Omarchy's updater in a terminal. It shows what changes and asks first."
+                  : "Ask the plugin's repository whether a newer version is published"
+                bordered: true
+                focusable: true
+                foreground: header.panel.foreground
+                accent: Color.accent
+                fontFamily: header.panel.fontFamily
+                onClicked: header.panel.updateInfo.canUpdate ? header.panel.runUpdate() : header.panel.checkForUpdates()
+              }
             }
           }
         }

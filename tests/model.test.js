@@ -747,3 +747,103 @@ test("apps hidden by a user stub are recognised by desktop id", () => {
   assert.equal(hidden["foot"], undefined)
   assert.deepEqual(Rules.parseHiddenEntries(""), {})
 })
+
+// ------------------------------------------------------------------ update check
+
+test("update-check settings default on, round-trip and can be switched off", () => {
+  assert.equal(Rules.updateCheckEnabled(Rules.emptyState()), true)
+  assert.equal(Rules.updateCheckEnabled(null), true)
+  const off = Rules.setUpdateCheck(Rules.emptyState(), false)
+  assert.equal(Rules.updateCheckEnabled(off), false)
+  assert.equal(Rules.updateCheckEnabled(Rules.normalize(JSON.parse(Rules.toJson(off)))), false)
+  assert.equal(Rules.updateCheckEnabled(Rules.normalize({ rules: [] })), true, "an old file has no setting")
+  assert.equal(Rules.updateCheckEnabled(Rules.setUpdateCheck(off, true)), true)
+  // Unrelated edits must not lose the setting.
+  const edited = Rules.upsert(off, "foot", "2", false, "Foot")
+  assert.equal(Rules.updateCheckEnabled(edited), false)
+  assert.equal(Rules.updateCheckEnabled(Rules.removeWorkspace(edited, "2")), false)
+})
+
+test("the probe's answer is one of four words and anything else is unknown", () => {
+  assert.equal(Rules.parseUpdateProbe("current\n"), "current")
+  assert.equal(Rules.parseUpdateProbe("  available "), "available")
+  assert.equal(Rules.parseUpdateProbe("unmanaged"), "unmanaged")
+  assert.equal(Rules.parseUpdateProbe("unknown"), "unknown")
+  assert.equal(Rules.parseUpdateProbe(""), "unknown")
+  assert.equal(Rules.parseUpdateProbe("sh: git: not found"), "unknown")
+  assert.equal(Rules.parseUpdateProbe("rm -rf ~"), "unknown")
+})
+
+test("times read as a person would say them", () => {
+  const min = 60000
+  assert.equal(Rules.relativeTime(0, 5000), "just now")
+  assert.equal(Rules.relativeTime(0, 44000), "just now")
+  assert.equal(Rules.relativeTime(0, 60 * 1000), "1 minute ago")
+  assert.equal(Rules.relativeTime(0, 23 * min), "23 minutes ago")
+  assert.equal(Rules.relativeTime(0, 59 * min), "59 minutes ago")
+  assert.equal(Rules.relativeTime(0, 60 * min), "1 hour ago")
+  assert.equal(Rules.relativeTime(0, 5 * 60 * min), "5 hours ago")
+  assert.equal(Rules.relativeTime(0, 24 * 60 * min), "1 day ago")
+  assert.equal(Rules.relativeTime(0, 3 * 24 * 60 * min), "3 days ago")
+  assert.equal(Rules.relativeTime(10000, 0), "just now", "a clock that went backwards does not print nonsense")
+})
+
+test("the panel's status line says what happened and what can be done", () => {
+  const now = 100 * 60000
+  const at = now - 23 * 60000
+  assert.deepEqual(Rules.updateSummary({ state: "current", checkedAt: at }, now, true),
+    { text: "No updates · checked 23 minutes ago", canCheck: true, canUpdate: false })
+  assert.deepEqual(Rules.updateSummary({ state: "available", checkedAt: at }, now, true),
+    { text: "Update available · checked 23 minutes ago", canCheck: true, canUpdate: true })
+  assert.deepEqual(Rules.updateSummary({ state: "unknown", checkedAt: at }, now, true),
+    { text: "Couldn’t check · tried 23 minutes ago", canCheck: true, canUpdate: false })
+  assert.deepEqual(Rules.updateSummary({ state: "checking", checkedAt: at }, now, true),
+    { text: "Checking for updates…", canCheck: false, canUpdate: false })
+  assert.equal(Rules.updateSummary({ state: "unmanaged", checkedAt: 0 }, now, true).text, "", "nothing to show for a non-git install")
+  assert.equal(Rules.updateSummary({ state: "pending", checkedAt: 0 }, now, true).text, "Not checked yet")
+  assert.equal(Rules.updateSummary({ state: "pending", checkedAt: 0 }, now, false).text, "Update checks are off")
+  assert.equal(Rules.updateSummary(null, now, true).canCheck, true)
+})
+
+// The check script is run for real against throwaway repositories, so each
+// verdict comes from git rather than from a string match.
+test("update-check.sh answers current, available, unmanaged and unknown from real repositories", (t) => {
+  try { childProcess.execFileSync("git", ["--version"], { stdio: "ignore" }) } catch (e) { return t.skip("git not installed") }
+  const script = path.join(__dirname, "..", "update-check.sh")
+  const root = fs.mkdtempSync("/tmp/appspace-update-")
+  const git = (cwd, ...args) => childProcess.execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+  const check = (dir) => childProcess.execFileSync("sh", [script, "check", dir], { encoding: "utf8" }).trim()
+  const commit = (dir, name) => { fs.writeFileSync(path.join(dir, name), name); git(dir, "add", "."); git(dir, "commit", "-q", "-m", name) }
+
+  const origin = path.join(root, "origin"); fs.mkdirSync(origin)
+  git(origin, "init", "-q", "-b", "main"); commit(origin, "one")
+  const plugin = path.join(root, "plugin")
+  git(root, "clone", "-q", origin, plugin)
+
+  assert.equal(check(plugin), "current", "same commit")
+
+  commit(origin, "two")
+  assert.equal(check(plugin), "available", "origin has a commit the checkout lacks")
+
+  git(plugin, "pull", "-q", "--ff-only")
+  assert.equal(check(plugin), "current", "after updating")
+
+  commit(plugin, "local-only")
+  assert.equal(check(plugin), "current", "a checkout ahead of origin is not nagged")
+
+  // Diverged: origin has something this checkout does not contain.
+  commit(origin, "three")
+  assert.equal(check(plugin), "available")
+
+  assert.equal(check(root), "unmanaged", "not a git checkout")
+
+  git(plugin, "remote", "set-url", "origin", path.join(root, "does-not-exist"))
+  assert.equal(check(plugin), "unknown", "remote unreachable")
+
+  // The check writes nothing: no new refs or objects came from asking.
+  git(plugin, "remote", "set-url", "origin", origin)
+  const before = git(plugin, "count-objects", "-v") + git(plugin, "for-each-ref")
+  check(plugin)
+  assert.equal(git(plugin, "count-objects", "-v") + git(plugin, "for-each-ref"), before)
+})

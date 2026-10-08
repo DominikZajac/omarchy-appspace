@@ -38,9 +38,29 @@ remove it too if you want nothing behind.
 
 Nothing beyond a stock Omarchy 4 install: `hyprctl` (reload, config check, moving
 windows), `uwsm-app` (launch at startup, through Omarchy's `o.exec_on_start`),
-`xdg-settings` (which browser web apps open in), `pgrep`, and `sh`. The plugin
+`xdg-settings` (which browser web apps open in), `pgrep`, `git` and `timeout` (the
+update check), and `sh`. The plugin
 reads `/proc/*/environ` of your own processes to learn a running Steam game's app id,
 and `/proc` again at login to measure how long Hyprland has been running.
+
+### Updates
+
+Omarchy checks itself for updates, but nothing checks plugins, so you could sit on an
+old version without knowing. Twenty seconds after the shell starts, and then once a
+day, AppSpace asks its own repository what its latest commit is
+(`git ls-remote origin HEAD`). That is one small request to the repository you
+installed it from. It fetches nothing and writes nothing, and like any request it
+shows your IP address to the host.
+
+The panel header shows the result, for example "No updates · checked 23 minutes ago",
+with a **Check now** button. When a newer version exists it says so and the button
+becomes **Update…**, which opens Omarchy's own updater in a terminal: it shows what
+changes and asks before applying anything, then restarts the shell. AppSpace never
+installs anything by itself.
+
+To turn the daily check off, run `omarchy-shell dominikzajac.appspace updates off`.
+*Check now* still works. A checkout that is ahead of its repository, such as a
+development copy, is never reported as outdated.
 
 After editing plugin code, run `omarchy restart shell`. Saving a file only
 refreshes the plugin registry; a mounted widget keeps running the old code.
@@ -206,6 +226,7 @@ omarchy-shell dominikzajac.appspace pin 3 ""                 # back to auto
 omarchy-shell dominikzajac.appspace persist 6 on             # always-present workspace
 omarchy-shell dominikzajac.appspace forget 6                 # drop workspace 6 and its pinned apps' rules
 omarchy-shell dominikzajac.appspace autostart spotify on     # launch at login; no workspace needed
+omarchy-shell dominikzajac.appspace updates off              # on | off | check | update
 omarchy-shell dominikzajac.appspace view workspaces
 omarchy-shell dominikzajac.appspace select vesktop
 ```
@@ -254,6 +275,7 @@ Hyprland has never seen.
 | `manifest.json` | plugin manifest |
 | `Panel.qml` | bar widget, both views, write pipeline |
 | `Rules.js` | model, JSON ↔ Lua serialization; no QML, no filesystem |
+| `update-check.sh` | read-only update check, and the wrapper that runs Omarchy's updater |
 | `tests/model.test.js` | model and generated-Lua tests (`node --test tests/model.test.js`) |
 | `~/.local/state/omarchy/appspace/rules.json` | source of truth (schema 6) |
 | `~/.local/state/omarchy/toggles/hypr/appspace.lua` | generated, overwritten in full, auto-loaded by Omarchy |

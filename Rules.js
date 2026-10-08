@@ -26,7 +26,7 @@ var SCHEMA_VERSION = 6
 // as its launcher entry and once as the window it actually opens.
 
 function emptyState() {
-  return { rules: [], workspaces: {}, aliases: {} }
+  return { rules: [], workspaces: {}, aliases: {}, settings: { updateCheck: true } }
 }
 
 // Measured at login on a busy session, Steam's first window took up to 38 s and
@@ -124,6 +124,10 @@ function normalize(raw) {
     }
   }
 
+  // The only setting so far: whether the plugin asks its own remote for news
+  // of a newer version. On unless explicitly switched off.
+  if (raw.settings && raw.settings.updateCheck === false) state.settings.updateCheck = false
+
   var alias_map = raw.aliases
   if (alias_map && typeof alias_map === "object") {
     for (var from in alias_map) {
@@ -157,6 +161,7 @@ function cloneState(state) {
     out.workspaces[key] = { "monitor": entry["monitor"], "persistent": entry["persistent"] }
   }
   for (var from in state.aliases) out.aliases[from] = state.aliases[from]
+  out.settings = { updateCheck: updateCheckEnabled(state) }
   return out
 }
 
@@ -425,7 +430,8 @@ function toJson(state) {
     "version": SCHEMA_VERSION,
     "rules": state.rules,
     "workspaces": state.workspaces,
-    "aliases": state.aliases
+    "aliases": state.aliases,
+    "settings": { "updateCheck": updateCheckEnabled(state) }
   }, null, 2) + "\n"
 }
 
@@ -731,6 +737,56 @@ function guardBinaries(entries, ownBasename, execString) {
   return out
 }
 
+// ------------------------------------------------------------- update check
+
+function updateCheckEnabled(state) {
+  return !state || !state.settings || state.settings.updateCheck !== false
+}
+
+function setUpdateCheck(state, on) {
+  var next = cloneState(state)
+  next.settings = { updateCheck: on === true }
+  return next
+}
+
+// The script prints one word. Anything else is "unknown": a plugin that trusts
+// whatever came back from a subprocess would show nonsense for a broken script.
+function parseUpdateProbe(text) {
+  var word = String(text || "").trim().split(/\s+/)[0]
+  return ["current", "available", "unmanaged"].indexOf(word) !== -1 ? word : "unknown"
+}
+
+// "just now", "23 minutes ago", "1 hour ago", "3 days ago".
+function relativeTime(thenMs, nowMs) {
+  var seconds = Math.max(0, Math.round((Number(nowMs) - Number(thenMs)) / 1000))
+  if (seconds < 45) return "just now"
+  var minutes = Math.round(seconds / 60)
+  if (minutes < 60) return minutes + (minutes === 1 ? " minute ago" : " minutes ago")
+  var hours = Math.round(minutes / 60)
+  if (hours < 24) return hours + (hours === 1 ? " hour ago" : " hours ago")
+  var days = Math.round(hours / 24)
+  return days + (days === 1 ? " day ago" : " days ago")
+}
+
+// What the panel shows beside the title, from the last probe's state and time.
+//   state: "pending" | "checking" | "current" | "available" | "unknown" | "unmanaged"
+// `canCheck` drives the manual button, `canUpdate` swaps it for Update.
+function updateSummary(info, nowMs, enabled) {
+  var state = String((info && info.state) || "pending")
+  var checkedAt = Number((info && info.checkedAt) || 0)
+  var ago = checkedAt > 0 ? relativeTime(checkedAt, nowMs) : ""
+  if (state === "unmanaged") return { text: "", canCheck: false, canUpdate: false }
+  if (state === "checking") return { text: "Checking for updates\u2026", canCheck: false, canUpdate: false }
+  if (state === "available")
+    return { text: "Update available" + (ago ? " \u00b7 checked " + ago : ""), canCheck: true, canUpdate: true }
+  if (state === "current")
+    return { text: "No updates \u00b7 checked " + ago, canCheck: true, canUpdate: false }
+  if (state === "unknown")
+    return { text: "Couldn\u2019t check" + (ago ? " \u00b7 tried " + ago : ""), canCheck: true, canUpdate: false }
+  // Nothing checked yet in this session.
+  return { text: enabled ? "Not checked yet" : "Update checks are off", canCheck: true, canUpdate: false }
+}
+
 // ------------------------------------------------------------- monitors
 
 // "eDP-1" means nothing to most people; "Laptop screen" does. Connector
@@ -960,6 +1016,11 @@ if (typeof module !== "undefined") {
     launchCommand: launchCommand,
     parseAutostart: parseAutostart,
     parseHiddenEntries: parseHiddenEntries,
+    updateCheckEnabled: updateCheckEnabled,
+    setUpdateCheck: setUpdateCheck,
+    parseUpdateProbe: parseUpdateProbe,
+    relativeTime: relativeTime,
+    updateSummary: updateSummary,
     ownAutostartFor: ownAutostartFor,
     classPattern: classPattern,
     luaString: luaString,
