@@ -72,7 +72,7 @@ development copy, is never reported as outdated.
 After editing plugin code, run `omarchy restart shell`. Saving a file only
 refreshes the plugin registry; a mounted widget keeps running the old code.
 
-## Three views
+## Four views
 
 **Apps** is every running window and every installed application, searchable, in
 three sections: *Running*, *Pinned* (has a rule, not open) and *Installed*. Pick one
@@ -95,6 +95,8 @@ pinned to it, and whether it is always present.
 
 **Monitors** is the screen layout. See [Monitors](#monitors).
 
+**Settings** is where the widget lives and how to open it. See [Settings](#settings).
+
 Switch views with the tabs or `Ctrl+Tab`.
 
 ## Omarchy 4.5: workspaces per monitor
@@ -115,12 +117,15 @@ globally underneath, in blocks of ten: the first monitor has 1-10, the next 11-2
 - **Each monitor starts on the lowest slot it owns.** Omarchy would start it on slot 1
   of its own block, which may belong to another screen, so a window dropped there would
   sit on a workspace nothing lists. With slots 2-4 assigned to a monitor, it starts on 2.
-- **A workspace strip in the bar.** `omarchy-shell dominikzajac.appspace strip on`
-  shows, inside the AppSpace widget, the slots the bar's own monitor owns (its first
-  five when it owns none). Clicking the focused one cycles its layout. Turn Omarchy's
-  own workspaces widget off with `omarchy plugin disable omarchy.workspaces`, or you
-  get two. The numbers appear where the AppSpace widget is; move it with
-  `omarchy bar move dominikzajac.appspace --section left`.
+- **A workspace strip in the bar.** The **Bar workspaces** button on the Settings tab (or
+  `omarchy-shell dominikzajac.appspace strip on`) shows, inside the AppSpace widget,
+  the slots the bar's own monitor owns (its first five when it owns none), and turns
+  Omarchy's own workspaces widget off so there is one set of numbers, not two. The
+  active slot is drawn as its layout shape: a square tiles, a circle scrolls, a triangle
+  floats; clicking it cycles the layout. **Number** (or `stripnumber off`) switches the
+  slot number inside that shape off; in the triangle there is little room for it.
+  Turning the strip on never moves AppSpace: the numbers appear wherever the widget
+  sits (see Settings below). Turning it off puts Omarchy's widget back after the menu.
 - **Global plans.** On an Omarchy older than 4.5, or when another tool plans workspaces
   globally and switches Omarchy's per-monitor handling off (hyprmoncfg does, with
   `o.workspaces.enabled = false` in its generated file), AppSpace falls back to plain
@@ -153,6 +158,27 @@ The third tab lays out your screens. A map shows each one at its position and si
 Not included: named profiles and automatic switching between them (rules saved per
 display already cover plugging a screen in and out), VRR, bit depth and HDR settings,
 and turning a screen off from the panel.
+
+## Settings
+
+![Settings view](preview-settings.png)
+
+- **Position.** The same six sections Omarchy offers when a bar widget is installed
+  (left, center start, center, center end, tray, right). Choosing one moves the widget
+  there with `omarchy bar move`; the dropdown shows where it is now, read from your bar
+  layout.
+- **Show icon.** Off hides the AppSpace icon but keeps the widget running, so the panel,
+  the commands and the workspace strip still work. It can only be turned off while a
+  shortcut is set, so there is always a way to open the panel.
+- **Bar workspaces** and **Number.** See above.
+- **Shortcut.** A key that opens the panel, written as modifiers and a named key, for
+  example `SUPER + ALT + A`. It is added to the generated Lua as a Hyprland bind running
+  `omarchy-shell dominikzajac.appspace toggle`. A combination another shortcut already
+  uses is refused, naming that shortcut, rather than bound twice. Keys given as
+  `code:N` are not accepted. Empty removes it.
+
+Without the icon or a shortcut the panel can still be opened from a terminal:
+`omarchy-shell dominikzajac.appspace toggle`.
 
 ## Where an app opens, and starting it at login
 
@@ -293,9 +319,13 @@ omarchy-shell dominikzajac.appspace persist 6 on             # always-present wo
 omarchy-shell dominikzajac.appspace forget 6                 # drop workspace 6 and its pinned apps' rules
 omarchy-shell dominikzajac.appspace autostart spotify on     # launch at login; no workspace needed
 omarchy-shell dominikzajac.appspace updates off              # on | off | check | update
-omarchy-shell dominikzajac.appspace view workspaces          # apps | workspaces | monitors
+omarchy-shell dominikzajac.appspace view workspaces          # apps | workspaces | monitors | settings
 omarchy-shell dominikzajac.appspace select vesktop
 omarchy-shell dominikzajac.appspace strip on                 # workspace strip in the bar; on | off
+omarchy-shell dominikzajac.appspace stripnumber off          # no slot number inside the active marker; on | off
+omarchy-shell dominikzajac.appspace icon off                 # hide the bar icon (needs a shortcut); on | off
+omarchy-shell dominikzajac.appspace shortcut "SUPER + ALT + A"   # key that opens the panel; "" removes it
+omarchy-shell dominikzajac.appspace toggle                   # open or close the panel
 omarchy-shell dominikzajac.appspace monitors                 # layout as saved
 omarchy-shell dominikzajac.appspace monitor "LG Electronics MP59G 0x01010101" 1920x1080@74.97 2102 575 1 0
                                                              # description, mode, x, y, scale, rotation (0-3)

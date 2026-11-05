@@ -26,7 +26,7 @@ var SCHEMA_VERSION = 6
 // as its launcher entry and once as the window it actually opens.
 
 function emptyState() {
-  return { rules: [], workspaces: {}, aliases: {}, settings: { updateCheck: true, workspaceBar: false }, monitors: {} }
+  return { rules: [], workspaces: {}, aliases: {}, settings: { updateCheck: true, workspaceBar: false, workspaceNumber: true, showIcon: true, shortcut: "" }, monitors: {} }
 }
 
 // Measured at login on a busy session, Steam's first window took up to 38 s and
@@ -129,6 +129,14 @@ function normalize(raw) {
   if (raw.settings && raw.settings.updateCheck === false) state.settings.updateCheck = false
   // The workspace strip in the bar is off until switched on.
   if (raw.settings && raw.settings.workspaceBar === true) state.settings.workspaceBar = true
+  // The slot number inside the active marker is on until switched off.
+  if (raw.settings && raw.settings.workspaceNumber === false) state.settings.workspaceNumber = false
+  // The bar icon is shown until switched off, and only a valid shortcut is kept.
+  if (raw.settings && raw.settings.showIcon === false) state.settings.showIcon = false
+  if (raw.settings) {
+    var keep = cleanShortcut(raw.settings.shortcut)
+    if (keep) state.settings.shortcut = keep
+  }
 
   // Monitor layout, keyed by the monitor's description (make, model, serial),
   // which survives a dock renaming its connectors.
@@ -173,7 +181,7 @@ function cloneState(state) {
   }
   for (var from in state.aliases) out.aliases[from] = state.aliases[from]
   for (var mk in state.monitors) out.monitors[mk] = cleanMonitor(state.monitors[mk])
-  out.settings = { updateCheck: updateCheckEnabled(state), workspaceBar: workspaceBarEnabled(state) }
+  out.settings = currentSettings(state)
   return out
 }
 
@@ -444,7 +452,7 @@ function toJson(state) {
     "workspaces": state.workspaces,
     "aliases": state.aliases,
     "monitors": state.monitors,
-    "settings": { "updateCheck": updateCheckEnabled(state), "workspaceBar": workspaceBarEnabled(state) }
+    "settings": currentSettings(state)
   }, null, 2) + "\n"
 }
 
@@ -650,6 +658,15 @@ function toLua(state, guards) {
   if (monitorLines.length > 0) {
     lines.push("-- Monitor layout")
     for (var ml = 0; ml < monitorLines.length; ml++) lines.push(monitorLines[ml])
+    lines.push("")
+  }
+
+  var shortcut = shortcutOf(state)
+  if (cleanShortcut(shortcut)) {
+    lines.push("-- Shortcut that opens the AppSpace panel")
+    lines.push("if type(o.bind) == \"function\" then")
+    lines.push("  o.bind(" + luaString(cleanShortcut(shortcut)) + ", \"Open AppSpace\", \"omarchy-shell dominikzajac.appspace toggle\")")
+    lines.push("end")
     lines.push("")
   }
 
@@ -945,7 +962,89 @@ function updateCheckEnabled(state) {
 
 function setUpdateCheck(state, on) {
   var next = cloneState(state)
-  next.settings = { updateCheck: on === true, workspaceBar: workspaceBarEnabled(state) }
+  next.settings = currentSettings(state)
+  next.settings.updateCheck = on === true
+  return next
+}
+
+function currentSettings(state) {
+  return {
+    updateCheck: updateCheckEnabled(state),
+    workspaceBar: workspaceBarEnabled(state),
+    workspaceNumber: workspaceNumberEnabled(state),
+    showIcon: showIconEnabled(state),
+    shortcut: shortcutOf(state)
+  }
+}
+
+function showIconEnabled(state) {
+  return !state || !state.settings || state.settings.showIcon !== false
+}
+
+function setShowIcon(state, on) {
+  var next = cloneState(state)
+  next.settings = currentSettings(state)
+  next.settings.showIcon = on === true
+  return next
+}
+
+// A key combination as Hyprland's binds spell it: one or more modifiers, then a
+// named key ("SUPER + ALT + A"). `code:` keys are not accepted, so a conflict with
+// an existing bind can be told from its key name. Anything else is refused rather
+// than written into Lua. Returns the cleaned string, or "" when it is not valid.
+var SHORTCUT_MODS = { "SUPER": 64, "SHIFT": 1, "CTRL": 4, "ALT": 8 }
+
+function cleanShortcut(value) {
+  var text = String(value === undefined || value === null ? "" : value).trim()
+  if (text.length === 0 || text.length > 40) return ""
+  var parts = text.split(/\s*\+\s*/)
+  if (parts.length < 2) return ""
+  var key = parts[parts.length - 1]
+  if (!/^[A-Za-z0-9_]{1,24}$/.test(key)) return ""
+  var mods = []
+  for (var i = 0; i < parts.length - 1; i++) {
+    var mod = parts[i].toUpperCase()
+    if (mod === "CONTROL") mod = "CTRL"
+    if (mod === "MOD4") mod = "SUPER"
+    if (SHORTCUT_MODS[mod] === undefined || mods.indexOf(mod) !== -1) return ""
+    mods.push(mod)
+  }
+  return mods.join(" + ") + " + " + (key.length === 1 ? key.toUpperCase() : key)
+}
+
+// The modifier bits Hyprland reports for a cleaned shortcut, and its key.
+function shortcutParts(value) {
+  var clean = cleanShortcut(value)
+  if (!clean) return null
+  var parts = clean.split(" + ")
+  var mask = 0
+  for (var i = 0; i < parts.length - 1; i++) mask |= SHORTCUT_MODS[parts[i]]
+  return { mask: mask, key: parts[parts.length - 1] }
+}
+
+function shortcutOf(state) {
+  return state && state.settings && state.settings.shortcut ? String(state.settings.shortcut) : ""
+}
+
+// Null when the text is not a valid shortcut; "" clears it.
+function setShortcut(state, value) {
+  var text = String(value === undefined || value === null ? "" : value).trim()
+  var clean = text.length === 0 ? "" : cleanShortcut(text)
+  if (text.length > 0 && !clean) return null
+  var next = cloneState(state)
+  next.settings = currentSettings(state)
+  next.settings.shortcut = clean
+  return next
+}
+
+function workspaceNumberEnabled(state) {
+  return !state || !state.settings || state.settings.workspaceNumber !== false
+}
+
+function setWorkspaceNumber(state, on) {
+  var next = cloneState(state)
+  next.settings = currentSettings(state)
+  next.settings.workspaceNumber = on === true
   return next
 }
 
@@ -955,7 +1054,8 @@ function workspaceBarEnabled(state) {
 
 function setWorkspaceBar(state, on) {
   var next = cloneState(state)
-  next.settings = { updateCheck: updateCheckEnabled(state), workspaceBar: on === true }
+  next.settings = currentSettings(state)
+  next.settings.workspaceBar = on === true
   return next
 }
 
@@ -1233,6 +1333,14 @@ if (typeof module !== "undefined") {
     removeMonitor: removeMonitor,
     updateCheckEnabled: updateCheckEnabled,
     workspaceBarEnabled: workspaceBarEnabled,
+    workspaceNumberEnabled: workspaceNumberEnabled,
+    showIconEnabled: showIconEnabled,
+    setShowIcon: setShowIcon,
+    cleanShortcut: cleanShortcut,
+    shortcutParts: shortcutParts,
+    shortcutOf: shortcutOf,
+    setShortcut: setShortcut,
+    setWorkspaceNumber: setWorkspaceNumber,
     setWorkspaceBar: setWorkspaceBar,
     setUpdateCheck: setUpdateCheck,
     parseUpdateProbe: parseUpdateProbe,

@@ -430,6 +430,29 @@ Panel {
     if (changed) root.apply(next, "", "", "Scale taken over from Omarchy")
   }
 
+  // Turns the workspace strip on or off, swapping Omarchy's own workspaces widget
+  // for it. This widget is never moved: where it sits in the bar is the position
+  // chosen when it was installed, and the numbers appear there. Run through the
+  // bar so a rebuild of this widget cannot cut the command short. Off puts
+  // Omarchy's widget back after the menu.
+  function setBarStrip(on) {
+    var next = Rules.setWorkspaceBar(root.state, on)
+    root.state = next
+    rulesFile.setText(Rules.toJson(next))
+    var cmd = on
+      ? "omarchy plugin disable omarchy.workspaces"
+      : "omarchy plugin enable omarchy.workspaces; omarchy bar move omarchy.workspaces --after omarchy.menu || omarchy bar move omarchy.workspaces --section left"
+    if (root.bar) root.bar.run(cmd)
+    root.status = on ? "Workspaces now shown by AppSpace" : "Omarchy's workspaces widget is back"
+    root.statusError = false
+  }
+
+  function setBarNumber(on) {
+    var next = Rules.setWorkspaceNumber(root.state, on)
+    root.state = next
+    rulesFile.setText(Rules.toJson(next))
+  }
+
   function placement(description, spec) {
     // spec is "right:<description>", "left:…", "above:…" or "below:…"
     var cut = spec.indexOf(":")
@@ -449,6 +472,118 @@ Panel {
     if (side === "above") return { x: b.x, y: b.y - sa.h }
     if (side === "below") return { x: b.x, y: b.y + sb.h }
     return null
+  }
+
+  // ------------------------------------------------------------- settings
+
+  // The six sections Omarchy offers when a bar widget is installed.
+  readonly property var barSections: [
+    { value: "left", label: "Left" },
+    { value: "centerBegin", label: "Center, start" },
+    { value: "center", label: "Center" },
+    { value: "centerEnd", label: "Center, end" },
+    { value: "tray", label: "Tray" },
+    { value: "right", label: "Right" }
+  ]
+  property string barSection: ""
+
+  function readBarSection(text) {
+    var parsed = null
+    try { parsed = JSON.parse(text) } catch (e) { return }
+    var layout = parsed && parsed.bar && parsed.bar.layout ? parsed.bar.layout : null
+    if (!layout) return
+    for (var section in layout) {
+      var list = layout[section]
+      if (!Array.isArray(list)) continue
+      for (var i = 0; i < list.length; i++)
+        if (list[i] && list[i].id === "dominikzajac.appspace") { root.barSection = section; return }
+    }
+    root.barSection = ""
+  }
+
+  // Moving rebuilds this widget, so the command goes through the bar.
+  function moveToSection(section) {
+    var known = root.barSections.some(function(o) { return o.value === section })
+    if (!known || !root.bar) return
+    root.bar.run("omarchy bar move dominikzajac.appspace --section " + section)
+  }
+
+  // With no icon and no shortcut the panel could not be opened from the bar, so
+  // the icon is only hidden while a shortcut is set (and the shortcut only
+  // cleared while the icon is shown).
+  function setShowIcon(on) {
+    root.status = ""
+    root.statusError = false
+    if (!on && Rules.shortcutOf(root.state).length === 0) {
+      root.status = "Set a shortcut first, or there would be no way to open this"
+      root.statusError = true
+      return
+    }
+    var next = Rules.setShowIcon(root.state, on)
+    root.state = next
+    rulesFile.setText(Rules.toJson(next))
+  }
+
+  property string pendingShortcut: ""
+
+  function applyShortcut(text) {
+    root.status = ""
+    root.statusError = false
+    var typed = String(text || "").trim()
+    var clean = typed.length === 0 ? "" : Rules.cleanShortcut(typed)
+    if (typed.length > 0 && !clean) {
+      root.status = "Use modifiers and a key, like SUPER + ALT + A"
+      root.statusError = true
+      return
+    }
+    if (clean.length === 0 && !Rules.showIconEnabled(root.state)) {
+      root.status = "Show the icon first, or there would be no way to open this"
+      root.statusError = true
+      return
+    }
+    if (clean === Rules.shortcutOf(root.state)) return
+    root.pendingShortcut = clean
+    if (clean.length === 0) root.commitShortcut()
+    else if (!bindsProc.running) bindsProc.running = true
+  }
+
+  function commitShortcut() {
+    var next = Rules.setShortcut(root.state, root.pendingShortcut)
+    if (!next) return
+    root.apply(next, "", "", root.pendingShortcut.length > 0 ? "Shortcut saved" : "Shortcut removed")
+  }
+
+  // A shortcut another bind already uses is refused, not silently doubled.
+  function checkShortcutConflict(text) {
+    var parts = Rules.shortcutParts(root.pendingShortcut)
+    var list = []
+    try { list = JSON.parse(text) } catch (e) { list = [] }
+    if (parts && Array.isArray(list)) {
+      for (var i = 0; i < list.length; i++) {
+        var b = list[i]
+        if (!b || b.description === "Open AppSpace") continue
+        if (Number(b.modmask) === parts.mask && String(b.key).toLowerCase() === parts.key.toLowerCase()) {
+          root.status = "Already used by: " + (b.description || "another shortcut")
+          root.statusError = true
+          return
+        }
+      }
+    }
+    root.commitShortcut()
+  }
+
+  Process {
+    id: bindsProc
+    command: ["hyprctl", "-j", "binds"]
+    stdout: StdioCollector { onStreamFinished: root.checkShortcutConflict(text) }
+  }
+
+  FileView {
+    path: root.home + "/.config/omarchy/shell.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.readBarSection(text())
   }
 
   // Omarchy 4.5 numbers every monitor's workspaces in a block of ten, and keeps
@@ -1338,9 +1473,7 @@ Panel {
     function strip(state: string): string {
       var what = String(state || "").toLowerCase()
       if (what !== "on" && what !== "off") return "usage: strip <on|off>"
-      var next = Rules.setWorkspaceBar(root.state, what === "on")
-      root.state = next
-      rulesFile.setText(Rules.toJson(next))
+      root.setBarStrip(what === "on")
       return "ok"
     }
 
@@ -1364,6 +1497,25 @@ Panel {
     function keep(): string { root.keepMonitors(); return "ok" }
     function revert(): string { root.revertMonitors(); return "ok" }
 
+    function stripnumber(state: string): string {
+      var what = String(state || "").toLowerCase()
+      if (what !== "on" && what !== "off") return "usage: stripnumber <on|off>"
+      root.setBarNumber(what === "on")
+      return "ok"
+    }
+
+    function icon(state: string): string {
+      var what = String(state || "").toLowerCase()
+      if (what !== "on" && what !== "off") return "usage: icon <on|off>"
+      root.setShowIcon(what === "on")
+      return root.statusError ? root.status : "ok"
+    }
+
+    function shortcut(keys: string): string {
+      root.applyShortcut(keys)
+      return root.statusError ? root.status : "ok"
+    }
+
     function advanced(state: string): string {
       root.advancedOpen = String(state || "").toLowerCase() === "on"
       return "ok"
@@ -1371,7 +1523,7 @@ Panel {
 
     function view(name: string): string {
       var value = String(name || "").toLowerCase()
-      if (value !== "apps" && value !== "workspaces" && value !== "monitors") return "usage: view <apps|workspaces|monitors>"
+      if (value !== "apps" && value !== "workspaces" && value !== "monitors" && value !== "settings") return "usage: view <apps|workspaces|monitors|settings>"
       root.view = value
       return "ok"
     }
@@ -1587,7 +1739,14 @@ Panel {
   ShellIpc {
     target: "omarchy.workspaces"
 
-    function refresh(): void { root.broadcast("refreshLayout") }
+    // Panel is not a BarWidget, so it has no broadcast(): ask every live
+    // instance (one per screen) directly.
+    function refresh(): void {
+      var items = root.bar && typeof root.bar.moduleWidgets === "function"
+        ? root.bar.moduleWidgets(root.moduleName) : [root]
+      for (var i = 0; i < items.length; i++)
+        if (items[i] && typeof items[i].refreshLayout === "function") items[i].refreshLayout()
+    }
   }
 
   function focusSlot(slot) {
@@ -1636,7 +1795,7 @@ Panel {
         // dark, centred in the layout shape.
         Text {
           textFormat: Text.PlainText
-          visible: parent.shown
+          visible: parent.shown && Rules.workspaceNumberEnabled(root.state)
           anchors.centerIn: parent
           text: parent.modelData === 10 ? "0" : String(parent.modelData)
           color: Color.background
@@ -1649,6 +1808,7 @@ Panel {
 
     BarIconButton {
       id: button
+      visible: Rules.showIconEnabled(root.state)
       bar: root.bar
       text: "\u{F0A07}"
       tooltipText: "AppSpace"
@@ -1672,7 +1832,8 @@ Panel {
     contentHeight: root.view === "apps"
       ? panel.fittedContentHeight(Style.space(620))
       : panel.fittedContentHeight(header.implicitHeight + Style.space(10)
-          + (root.view === "monitors" ? monitorsView.implicitHeight : workspacesView.implicitHeight)
+          + (root.view === "monitors" ? monitorsView.implicitHeight
+              : root.view === "settings" ? settingsView.implicitHeight : workspacesView.implicitHeight)
           + Style.space(8) + statusRow.height)
 
     // A plain Item rather than PanelKeyCatcher: that helper swallows Tab to
@@ -1769,7 +1930,8 @@ Panel {
           options: [
             { value: "apps", label: "Apps" },
             { value: "workspaces", label: "Workspaces" },
-            { value: "monitors", label: "Monitors" }
+            { value: "monitors", label: "Monitors" },
+            { value: "settings", label: "Settings" }
           ]
           value: root.view
           foreground: root.foreground
@@ -2511,6 +2673,7 @@ Panel {
             font.pixelSize: Style.font.caption
           }
         }
+
       }
 
       // ------------------------------------------------- monitors view
@@ -2746,6 +2909,202 @@ Panel {
           width: parent.width
           wrapMode: Text.WordWrap
           text: "Drag a screen to move it; it always snaps flush against another. Saved per display, and a change reverts unless you keep it."
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      // ------------------------------------------------- settings view
+      Column {
+        id: settingsView
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(14)
+        visible: root.view === "settings"
+        spacing: Style.space(14)
+
+        Text {
+          textFormat: Text.PlainText
+          text: "IN THE BAR"
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(110)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Position"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Dropdown {
+            width: Style.space(190)
+            anchors.verticalCenter: parent.verticalCenter
+            showLabel: false
+            options: root.barSections
+            value: root.barSection
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.moveToSection(value) }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - Style.space(110) - Style.space(190) - parent.spacing * 2
+            elide: Text.ElideRight
+            text: "The same sections Omarchy offers when it is installed."
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(110)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Icon"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Button {
+            text: Rules.showIconEnabled(root.state) ? "Show icon: On" : "Show icon: Off"
+            tooltipText: "The AppSpace icon in the bar. Off needs a shortcut below to open the panel."
+            bordered: true
+            focusable: true
+            selected: Rules.showIconEnabled(root.state)
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.setShowIcon(!Rules.showIconEnabled(root.state))
+          }
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(110)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Workspaces"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Button {
+            visible: root.perMonitor
+            text: Rules.workspaceBarEnabled(root.state) ? "Bar workspaces: On" : "Bar workspaces: Off"
+            tooltipText: "Show only each monitor's own workspaces in the bar, in place of Omarchy's workspaces widget"
+            bordered: true
+            focusable: true
+            selected: Rules.workspaceBarEnabled(root.state)
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.setBarStrip(!Rules.workspaceBarEnabled(root.state))
+          }
+
+          Button {
+            visible: root.perMonitor && Rules.workspaceBarEnabled(root.state)
+            text: Rules.workspaceNumberEnabled(root.state) ? "Number: On" : "Number: Off"
+            tooltipText: "Show the slot number inside the marker of the active workspace"
+            bordered: true
+            focusable: true
+            selected: Rules.workspaceNumberEnabled(root.state)
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.setBarNumber(!Rules.workspaceNumberEnabled(root.state))
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: !root.perMonitor
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Needs Omarchy 4.5's workspaces per monitor."
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        PanelSeparator { width: parent.width; foreground: root.foreground }
+
+        Text {
+          textFormat: Text.PlainText
+          text: "OPENING THIS PANEL"
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: Style.space(110)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Shortcut"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          TextField {
+            id: shortcutField
+            width: Style.space(240)
+            anchors.verticalCenter: parent.verticalCenter
+            foreground: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            placeholderText: "SUPER + ALT + A"
+            text: Rules.shortcutOf(root.state)
+            onAccepted: root.applyShortcut(text)
+            onEditingFinished: root.applyShortcut(text)
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - Style.space(110) - Style.space(240) - parent.spacing * 2
+            elide: Text.ElideRight
+            text: "Modifiers and a key. Enter saves; empty removes it."
+            color: root.foreground
+            opacity: 0.45
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: "From a terminal: omarchy-shell dominikzajac.appspace toggle"
           color: root.foreground
           opacity: 0.45
           font.family: root.fontFamily
