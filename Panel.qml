@@ -72,8 +72,8 @@ Panel {
 
   // The bar sizes each widget from its root implicitWidth/Height. Without
   // these the slot collapses to 0x0 and the icon never appears on the bar.
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: barRow.implicitWidth
+  implicitHeight: barRow.implicitHeight
 
   readonly property string panelTitle: "AppSpace"
 
@@ -187,6 +187,329 @@ Panel {
 
     ids.sort(function(a, b) { return a - b })
     return ids
+  }
+
+  // ------------------------------------------------------------- monitors
+
+  // What Hyprland reports now: connector, description, current mode, position,
+  // scale, rotation and every mode the screen offers.
+  property var monitorList: []
+
+  function readMonitors() {
+    if (!monitorsProc.running) monitorsProc.running = true
+  }
+
+  function parseMonitors(text) {
+    var parsed = []
+    try { parsed = JSON.parse(text) } catch (e) { return }
+    if (!Array.isArray(parsed)) return
+    var out = []
+    for (var i = 0; i < parsed.length; i++) {
+      var m = parsed[i]
+      if (!m || m.disabled === true || !m.description) continue
+      var modes = []
+      var seen = ({})
+      var list = m.availableModes || []
+      for (var j = 0; j < list.length; j++) {
+        var mode = String(list[j]).replace(/Hz$/, "")
+        if (seen[mode]) continue
+        seen[mode] = true
+        var parts = /^([0-9]+)x([0-9]+)@([0-9.]+)$/.exec(mode)
+        modes.push({ value: mode, label: mode.replace("x", "\u00d7").replace("@", " @ ") + " Hz",
+                     w: parts ? parseInt(parts[1], 10) : 0, h: parts ? parseInt(parts[2], 10) : 0,
+                     hz: parts ? parseFloat(parts[3]) : 0 })
+      }
+      // Largest resolution first, and within one the highest refresh rate.
+      modes.sort(function(a, b) {
+        if (a.w * a.h !== b.w * b.h) return b.w * b.h - a.w * a.h
+        if (a.w !== b.w) return b.w - a.w
+        return b.hz - a.hz
+      })
+      out.push({
+        name: String(m.name), description: String(m.description),
+        mode: m.width + "x" + m.height + "@" + Number(m.refreshRate).toFixed(2),
+        x: Math.round(m.x), y: Math.round(m.y), scale: Number(m.scale),
+        transform: Number(m.transform) || 0, modes: modes
+      })
+    }
+    out.sort(function(a, b) { return a.x - b.x })
+    root.monitorList = out
+  }
+
+  // A monitor's size in layout units: pixels divided by scale, swapped when it
+  // is turned on its side.
+  function logicalSize(mode, scale, transform) {
+    var m = /^([0-9]+)x([0-9]+)/.exec(String(mode))
+    var w = m ? parseInt(m[1], 10) : 1920
+    var h = m ? parseInt(m[2], 10) : 1080
+    if (transform % 2 === 1) { var t = w; w = h; h = t }
+    return { w: Math.round(w / scale), h: Math.round(h / scale) }
+  }
+
+  // The layout a monitor has now: the saved one, else what Hyprland reports.
+  function monitorNow(m) {
+    var saved = Rules.monitorEntry(root.state, m.description)
+    return saved ? saved : { mode: m.mode, x: m.x, y: m.y, scale: m.scale, transform: m.transform, enabled: true }
+  }
+
+  // Every connected monitor gets an entry on the first change, so the others
+  // keep exactly the position they have instead of falling back to "auto".
+  function seedMonitors(state) {
+    var next = state
+    for (var i = 0; i < root.monitorList.length; i++) {
+      var m = root.monitorList[i]
+      if (Rules.monitorEntry(next, m.description)) continue
+      var seeded = Rules.setMonitor(next, m.description, { mode: m.mode, x: m.x, y: m.y, scale: m.scale, transform: m.transform })
+      if (seeded) next = seeded
+    }
+    return next
+  }
+
+  // After a change the previous state is kept for `confirmLeft` seconds. A
+  // layout that blanks the screen can't be confirmed, so it reverts itself.
+  property var revertState: null
+  property int confirmLeft: 0
+
+  function applyMonitor(description, fields) {
+    if (root.applying) return
+    var base = root.seedMonitors(root.state)
+    var next = Rules.setMonitor(base, description, fields)
+    if (!next) {
+      root.status = "That display setting isn't valid"
+      root.statusError = true
+      return
+    }
+    // Further changes while one is waiting for confirmation revert to the
+    // layout from before the first of them.
+    if (root.confirmLeft <= 0) root.revertState = root.state
+    root.confirmLeft = 15
+    confirmTimer.restart()
+    root.apply(next, "", "", "Display changed")
+  }
+
+  function keepMonitors() {
+    confirmTimer.stop()
+    root.confirmLeft = 0
+    root.revertState = null
+    root.status = "Display layout kept ✓"
+  }
+
+  function revertMonitors() {
+    confirmTimer.stop()
+    root.confirmLeft = 0
+    var back = root.revertState
+    root.revertState = null
+    if (!back) return
+    if (root.applying) { Qt.callLater(function() { root.apply(back, "", "", "Reverted") }); return }
+    root.apply(back, "", "", "Reverted")
+  }
+
+  Timer {
+    id: confirmTimer
+    interval: 1000
+    repeat: true
+    onTriggered: {
+      root.confirmLeft -= 1
+      if (root.confirmLeft <= 0) root.revertMonitors()
+    }
+  }
+
+  Process {
+    id: monitorsProc
+    command: ["hyprctl", "-j", "monitors", "all"]
+    stdout: StdioCollector { onStreamFinished: root.parseMonitors(text) }
+  }
+
+  readonly property var layoutBounds: {
+    var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9
+    for (var i = 0; i < root.monitorList.length; i++) {
+      var now = root.monitorNow(root.monitorList[i])
+      var size = root.logicalSize(now.mode, now.scale, now.transform)
+      minX = Math.min(minX, now.x); minY = Math.min(minY, now.y)
+      maxX = Math.max(maxX, now.x + size.w); maxY = Math.max(maxY, now.y + size.h)
+    }
+    if (minX > maxX) return { x: 0, y: 0, w: 1, h: 1 }
+    // Room around the screens, so one can be dragged beyond the others.
+    var roomX = (maxX - minX) * 0.10
+    var roomY = (maxY - minY) * 0.45
+    return { x: minX - roomX, y: minY - roomY, w: maxX - minX + 2 * roomX, h: maxY - minY + 2 * roomY }
+  }
+
+  // Where a dragged monitor lands. Screens always touch: it is placed flush
+  // against a side of another screen (the one nearest to where it was dropped),
+  // sharing at least part of that edge, and along the edge it snaps to the
+  // other screen's start, end or middle within `tol`. A spot on top of a third
+  // screen is never offered, so `null` only when there is no room at all.
+  function snapped(description, nx, ny, tol) {
+    var mine = null
+    var others = []
+    for (var i = 0; i < root.monitorList.length; i++) {
+      var m = root.monitorList[i]
+      var now = root.monitorNow(m)
+      var size = root.logicalSize(now.mode, now.scale, now.transform)
+      var box = { x: now.x, y: now.y, w: size.w, h: size.h }
+      if (m.description === description) mine = box
+      else others.push(box)
+    }
+    if (!mine) return null
+    if (others.length === 0) return { x: Math.round(nx), y: Math.round(ny) }
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+    function along(v, size, start, length, tolerance) {
+      // snap start-to-start, end-to-end or middle-to-middle
+      var options = [start, start + length - size, start + (length - size) / 2]
+      var best = v, bestD = tolerance
+      for (var a = 0; a < options.length; a++) {
+        var d = Math.abs(v - options[a])
+        if (d < bestD) { bestD = d; best = options[a] }
+      }
+      return best
+    }
+
+    var candidates = []
+    for (var j = 0; j < others.length; j++) {
+      var o = others[j]
+      var keep = Math.min(100, mine.w, mine.h, o.w, o.h)
+      var yLo = o.y - mine.h + keep, yHi = o.y + o.h - keep
+      var xLo = o.x - mine.w + keep, xHi = o.x + o.w - keep
+      var y = along(clamp(ny, yLo, yHi), mine.h, o.y, o.h, tol)
+      var x = along(clamp(nx, xLo, xHi), mine.w, o.x, o.w, tol)
+      candidates.push({ x: o.x + o.w, y: y })
+      candidates.push({ x: o.x - mine.w, y: y })
+      candidates.push({ x: x, y: o.y + o.h })
+      candidates.push({ x: x, y: o.y - mine.h })
+    }
+
+    var best = null, bestDist = 1e18
+    for (var c = 0; c < candidates.length; c++) {
+      var cand = candidates[c]
+      var clear = true
+      for (var k = 0; k < others.length; k++) {
+        var q = others[k]
+        if (cand.x < q.x + q.w && cand.x + mine.w > q.x && cand.y < q.y + q.h && cand.y + mine.h > q.y) { clear = false; break }
+      }
+      if (!clear) continue
+      var dist = (cand.x - nx) * (cand.x - nx) + (cand.y - ny) * (cand.y - ny)
+      if (dist < bestDist) { bestDist = dist; best = cand }
+    }
+    return best ? { x: Math.round(best.x), y: Math.round(best.y) } : null
+  }
+
+  // "LG", "Samsung": the make from the description, with the connector added
+  // only when two screens would otherwise carry the same name.
+  function shortName(m) {
+    var make = String(m.description).split(" ")[0]
+    var same = 0
+    for (var i = 0; i < root.monitorList.length; i++)
+      if (String(root.monitorList[i].description).split(" ")[0] === make) same++
+    return same > 1 ? make + " (" + m.name + ")" : make
+  }
+
+  // Omarchy's own scale shortcut (Super+/) and its monitor panel write the new
+  // scale into ~/.config/hypr/monitors.lua and reload. AppSpace's saved layout
+  // loads after that file, so it would quietly undo the change. Instead a scale
+  // written there for a screen AppSpace manages is taken over as the saved one.
+  function adoptOmarchyScales(text) {
+    if (root.applying || root.confirmLeft > 0 || root.monitorList.length === 0) return
+    var next = root.state
+    var changed = false
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var hit = /output\s*=\s*"([^"]+)".*scale\s*=\s*([0-9]+(?:\.[0-9]+)?)/.exec(lines[i])
+      if (!hit || /^\s*--/.test(lines[i])) continue
+      for (var j = 0; j < root.monitorList.length; j++) {
+        var m = root.monitorList[j]
+        var saved = Rules.monitorEntry(next, m.description)
+        if (m.name !== hit[1] || !saved) continue
+        var scale = parseFloat(hit[2])
+        if (Math.abs(saved.scale - scale) < 0.005) continue
+        var updated = Rules.setMonitor(next, m.description, { scale: scale })
+        if (updated) { next = updated; changed = true }
+      }
+    }
+    if (changed) root.apply(next, "", "", "Scale taken over from Omarchy")
+  }
+
+  function placement(description, spec) {
+    // spec is "right:<description>", "left:…", "above:…" or "below:…"
+    var cut = spec.indexOf(":")
+    var side = spec.substring(0, cut)
+    var otherDesc = spec.substring(cut + 1)
+    var me = null, other = null
+    for (var i = 0; i < root.monitorList.length; i++) {
+      if (root.monitorList[i].description === description) me = root.monitorList[i]
+      if (root.monitorList[i].description === otherDesc) other = root.monitorList[i]
+    }
+    if (!me || !other) return null
+    var a = root.monitorNow(me), b = root.monitorNow(other)
+    var sa = root.logicalSize(a.mode, a.scale, a.transform)
+    var sb = root.logicalSize(b.mode, b.scale, b.transform)
+    if (side === "right") return { x: b.x + sb.w, y: b.y }
+    if (side === "left") return { x: b.x - sa.w, y: b.y }
+    if (side === "above") return { x: b.x, y: b.y - sa.h }
+    if (side === "below") return { x: b.x, y: b.y + sb.h }
+    return null
+  }
+
+  // Omarchy 4.5 numbers every monitor's workspaces in a block of ten, and keeps
+  // which monitor owns which block in this file (block, connector, identity).
+  // A tool that plans workspaces globally (hyprmoncfg) switches that off, in which
+  // case a slot is just the workspace number, as before.
+  property var monitorBlocks: ({})
+  property bool globalPlan: false
+
+  readonly property bool perMonitor: Object.keys(root.monitorBlocks).length > 0 && !root.globalPlan
+
+  function readBlocks(text) {
+    var next = ({})
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var f = lines[i].split("\t")
+      if (f.length >= 3) next[f[2].replace(/ #[0-9]+$/, "")] = parseInt(f[0], 10)
+    }
+    root.monitorBlocks = next
+  }
+
+  // The real workspace id of a slot on the monitor that owns it.
+  function resolvedId(slot, monitor) {
+    var id = parseInt(slot, 10)
+    var key = String(monitor || "").replace(/^desc:/, "")
+    if (root.perMonitor && key.length > 0 && root.monitorBlocks[key] !== undefined)
+      return root.monitorBlocks[key] * 10 + id
+    return id
+  }
+
+  function monitorHeading(value) {
+    var opts = root.monitorOptions
+    for (var i = 0; i < opts.length; i++)
+      if (opts[i].value === value && value.length > 0) return opts[i].label
+    return "Not assigned to a monitor"
+  }
+
+  // Rows of the workspaces view. With per-monitor workspaces they are grouped
+  // under the monitor that owns the slot, so each monitor lists only its own.
+  readonly property var workspaceRows: {
+    var ids = root.barWorkspaces
+    if (!root.perMonitor) return ids.map(function(id) { return { id: id, heading: "" } })
+
+    var order = root.monitorOptions.map(function(o) { return o.value })
+    var groups = ({})
+    ids.forEach(function(id) {
+      var owner = Rules.workspaceMonitor(root.state, String(id))
+      if (order.indexOf(owner) === -1) owner = ""
+      if (!groups[owner]) groups[owner] = []
+      groups[owner].push(id)
+    })
+
+    var out = []
+    var keys = order.filter(function(v) { return v.length > 0 }).concat([""])
+    keys.forEach(function(k) {
+      var list = groups[k] || []
+      list.forEach(function(id, i) {
+        out.push({ id: id, heading: i === 0 ? root.monitorHeading(k) : "" })
+      })
+    })
+    return out
   }
 
   readonly property int nextFreeWorkspace: {
@@ -689,12 +1012,14 @@ Panel {
 
     root.status = root.status.replace(" …", " ✓")
     root.statusError = false
+    root.readMonitors()
 
     // The rule takes effect the next time the window opens; if it is already
     // open, move it now so the result is visible immediately.
     if (root.pendingMoveAddress.length > 0 && root.pendingMoveWorkspace.length > 0) {
       evalProc.command = ["hyprctl", "eval",
-        Rules.moveWindowLua(root.pendingMoveAddress, root.pendingMoveWorkspace)]
+        Rules.moveWindowLua(root.pendingMoveAddress, root.pendingMoveWorkspace,
+          Rules.workspaceMonitor(root.state, root.pendingMoveWorkspace))]
       root.pendingMoveAddress = ""
       root.pendingMoveWorkspace = ""
       if (!evalProc.running) evalProc.running = true
@@ -721,6 +1046,32 @@ Panel {
     onLoaded: root.loadState()
     onFileChanged: reload()
     onLoadFailed: root.loadState()
+  }
+
+  FileView {
+    path: root.stateHome + "/omarchy/monitor-workspaces"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.readBlocks(text())
+    onLoadFailed: root.readBlocks("")
+  }
+
+  FileView {
+    path: root.home + "/.config/hypr/hyprmoncfg-monitors.lua"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.globalPlan = text().indexOf("o.workspaces.enabled = false") !== -1
+    onLoadFailed: root.globalPlan = false
+  }
+
+  FileView {
+    path: root.home + "/.config/hypr/monitors.lua"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.adoptOmarchyScales(text())
   }
 
   FileView {
@@ -982,6 +1333,37 @@ Panel {
       return "ok"
     }
 
+    // The workspace strip in the bar: this monitor's own workspaces, in place of
+    // Omarchy's workspaces widget (turn that one off in the bar settings).
+    function strip(state: string): string {
+      var what = String(state || "").toLowerCase()
+      if (what !== "on" && what !== "off") return "usage: strip <on|off>"
+      var next = Rules.setWorkspaceBar(root.state, what === "on")
+      root.state = next
+      rulesFile.setText(Rules.toJson(next))
+      return "ok"
+    }
+
+    function monitors(): string {
+      var lines = []
+      for (var i = 0; i < root.monitorList.length; i++) {
+        var m = root.monitorNow(root.monitorList[i])
+        lines.push(root.monitorList[i].name + " " + root.monitorList[i].description + " -> " + m.mode
+          + " at " + m.x + "x" + m.y + " scale " + m.scale + " transform " + m.transform)
+      }
+      return lines.join("\n")
+    }
+
+    // monitor <description> <mode> <x> <y> <scale> [transform]
+    function monitor(description: string, mode: string, x: string, y: string, scale: string, transform: string): string {
+      if (root.applying) return "busy"
+      root.applyMonitor(String(description), { mode: mode, x: x, y: y, scale: scale, transform: transform === "" ? 0 : transform })
+      return "ok — keep or revert within 15 seconds"
+    }
+
+    function keep(): string { root.keepMonitors(); return "ok" }
+    function revert(): string { root.revertMonitors(); return "ok" }
+
     function advanced(state: string): string {
       root.advancedOpen = String(state || "").toLowerCase() === "on"
       return "ok"
@@ -989,7 +1371,7 @@ Panel {
 
     function view(name: string): string {
       var value = String(name || "").toLowerCase()
-      if (value !== "apps" && value !== "workspaces") return "usage: view <apps|workspaces>"
+      if (value !== "apps" && value !== "workspaces" && value !== "monitors") return "usage: view <apps|workspaces|monitors>"
       root.view = value
       return "ok"
     }
@@ -1088,17 +1470,190 @@ Panel {
     Qt.callLater(function() { searchField.forceActiveFocus() })
   }
 
-  Component.onCompleted: root.loadState()
+  onViewChanged: if (view === "monitors") root.readMonitors()
+
+  Component.onCompleted: { root.loadState(); root.readMonitors(); root.refreshLayout() }
 
   // ------------------------------------------------------------- UI
 
-  BarIconButton {
-    id: button
-    anchors.fill: parent
-    bar: root.bar
-    text: "\u{F0A07}"
-    tooltipText: "AppSpace"
-    onPressed: root.toggle()
+  // The monitor this bar is on, to list only the workspaces that belong to it.
+  readonly property var barMonitor: {
+    var window = root.QsWindow.window
+    var screen = window ? window.screen : null
+    try { return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor } catch (e) { return null }
+  }
+
+  // Slots shown on this monitor's bar: the ones assigned to it, or, when none
+  // is, its first five. With a global plan they are workspace numbers as usual.
+  readonly property var stripSlots: {
+    var m = root.barMonitor
+    var desc = m ? "desc:" + String(m.description || "") : ""
+    var owned = []
+    for (var key in root.state.workspaces) {
+      var n = parseInt(key, 10)
+      if (n >= 1 && n <= 10 && root.state.workspaces[key]["monitor"] === desc) owned.push(n)
+    }
+    if (owned.length === 0 && root.perMonitor) owned = [1, 2, 3, 4, 5]
+    owned.sort(function(a, b) { return a - b })
+    return owned
+  }
+
+  // The workspace the bar's monitor shows carries its layout, as in Omarchy's own
+  // widget: a square tiles, a circle scrolls, a triangle floats. It stands in for
+  // the number, which is how the active slot is told from the others.
+  property string activeMode: "dwindle"
+  property bool modeStale: false
+  property var modeCache: ({})
+  property int modeGeneration: 0
+  property int modeProcWorkspace: -1
+  property int modeProcGeneration: 0
+
+  function modeGlyph(mode) {
+    if (mode === "scrolling") return "\u{F0765}"
+    if (mode === "floating") return "\u{F0536}"
+    return "\u{F14FB}"
+  }
+
+  function activeWorkspaceId() {
+    var m = root.barMonitor
+    return m && m.activeWorkspace ? m.activeWorkspace.id : -1
+  }
+
+  function showActiveMode() {
+    var mode = root.modeCache[root.activeWorkspaceId()]
+    if (mode !== undefined) root.activeMode = mode
+    else root.readMode()
+  }
+
+  function readMode() {
+    if (modeProc.running) { root.modeStale = true; return }
+    var id = root.activeWorkspaceId()
+    if (id === -1) return
+    root.modeProcWorkspace = id
+    root.modeProcGeneration = root.modeGeneration
+    modeProc.command = ["omarchy-hyprland-workspace-layout-current", String(id)]
+    modeProc.running = true
+  }
+
+  function refreshLayout() {
+    root.modeCache = ({})
+    root.modeGeneration++
+    root.readMode()
+  }
+
+  // The layout commands act on the focused workspace, so a click on another
+  // monitor's bar focuses that monitor first.
+  function cycleLayout() {
+    if (!root.bar) return
+    var command = "omarchy-hyprland-workspace-layout-toggle"
+    var m = root.barMonitor
+    if (m && !m.focused)
+      command = "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ monitor = \"" + m.name + "\" })") + " >/dev/null && " + command
+    root.bar.run(command)
+  }
+
+  Process {
+    id: modeProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var mode = text.trim()
+        if (!mode || root.modeProcGeneration !== root.modeGeneration) return
+        root.modeCache[root.modeProcWorkspace] = mode
+        if (root.modeProcWorkspace === root.activeWorkspaceId()) root.activeMode = mode
+      }
+    }
+    onExited: {
+      if (!root.modeStale) return
+      root.modeStale = false
+      Qt.callLater(root.showActiveMode)
+    }
+  }
+
+  Connections {
+    target: root.barMonitor
+    function onActiveWorkspaceChanged() { root.showActiveMode() }
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      var name = event ? String(event.name) : ""
+      if (name === "configreloaded") root.refreshLayout()
+    }
+  }
+
+  // Super + L changes the layout without a focus change and tells the workspaces
+  // widget by this name, so a strip standing in for it listens for it too.
+  ShellIpc {
+    target: "omarchy.workspaces"
+
+    function refresh(): void { root.broadcast("refreshLayout") }
+  }
+
+  function focusSlot(slot) {
+    var m = root.barMonitor
+    if (!m || !root.bar) return
+    var expr = root.perMonitor
+      ? "o.workspaces.focus(" + slot + ", \"" + m.name + "\")"
+      : "hl.dsp.focus({ workspace = \"" + slot + "\" })"
+    root.bar.run("hyprctl dispatch " + Util.shellQuote(expr))
+  }
+
+  function stripId(slot) {
+    var m = root.barMonitor
+    return root.resolvedId(slot, m ? "desc:" + String(m.description || "") : "")
+  }
+
+  Grid {
+    id: barRow
+    columns: root.vertical ? 1 : 64
+    spacing: 0
+
+    Repeater {
+      model: Rules.workspaceBarEnabled(root.state) && root.perMonitor ? root.stripSlots : []
+
+      WidgetButton {
+        required property int modelData
+
+        readonly property int wsId: root.stripId(modelData)
+        readonly property bool shown: root.barMonitor && root.barMonitor.activeWorkspace
+          && root.barMonitor.activeWorkspace.id === wsId
+        readonly property bool occupied: root.workspaceOccupied(wsId)
+
+        bar: root.bar
+        text: shown ? root.modeGlyph(root.activeMode) : (modelData === 10 ? "0" : String(modelData))
+        opacity: shown || occupied ? 1 : 0.5
+        horizontalMargin: 6
+        verticalPadding: 6
+        fixedWidth: root.vertical ? (Number(root.barSize) || 0) : Style.space(20)
+        fixedHeight: Number(root.barSize) || 0
+        onPressed: function() {
+          if (shown) root.cycleLayout()
+          else root.focusSlot(modelData)
+        }
+
+        // The slots are not numbered in order, so the active one keeps its number:
+        // dark, centred in the layout shape.
+        Text {
+          textFormat: Text.PlainText
+          visible: parent.shown
+          anchors.centerIn: parent
+          text: parent.modelData === 10 ? "0" : String(parent.modelData)
+          color: Color.background
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+    }
+
+    BarIconButton {
+      id: button
+      bar: root.bar
+      text: "\u{F0A07}"
+      tooltipText: "AppSpace"
+      onPressed: root.toggle()
+    }
   }
 
   KeyboardPanel {
@@ -1117,7 +1672,8 @@ Panel {
     contentHeight: root.view === "apps"
       ? panel.fittedContentHeight(Style.space(620))
       : panel.fittedContentHeight(header.implicitHeight + Style.space(10)
-          + workspacesView.implicitHeight + Style.space(8) + statusRow.height)
+          + (root.view === "monitors" ? monitorsView.implicitHeight : workspacesView.implicitHeight)
+          + Style.space(8) + statusRow.height)
 
     // A plain Item rather than PanelKeyCatcher: that helper swallows Tab to
     // switch bar panels, which would make it impossible to reach the
@@ -1212,7 +1768,8 @@ Panel {
           id: viewTabs
           options: [
             { value: "apps", label: "Apps" },
-            { value: "workspaces", label: "Workspaces" }
+            { value: "workspaces", label: "Workspaces" },
+            { value: "monitors", label: "Monitors" }
           ]
           value: root.view
           foreground: root.foreground
@@ -1741,22 +2298,41 @@ Panel {
         }
 
         Repeater {
-          model: root.barWorkspaces
+          model: root.workspaceRows
 
           Item {
             id: wsRow
-            required property int modelData
+            required property var modelData
 
-            readonly property string wsName: String(modelData)
-            readonly property bool occupied: root.workspaceOccupied(modelData)
+            readonly property string wsName: String(modelData.id)
+            readonly property string heading: modelData.heading
+            readonly property real headingHeight: heading.length > 0 ? Style.space(22) : 0
+            readonly property bool occupied: root.workspaceOccupied(
+              root.resolvedId(modelData.id, Rules.workspaceMonitor(root.state, String(modelData.id))))
             readonly property bool persistent: Rules.workspacePersistent(root.state, wsName)
             readonly property var pinned: Rules.rulesForWorkspace(root.state, wsName)
 
             width: workspacesView.width
-            height: Style.spacing.controlHeight + Style.space(6)
+            height: Style.spacing.controlHeight + Style.space(6) + headingHeight
+
+            Text {
+              textFormat: Text.PlainText
+              visible: wsRow.heading.length > 0
+              anchors.left: parent.left
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(4)
+              text: wsRow.heading.toUpperCase()
+              color: root.foreground
+              opacity: 0.6
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
 
             Row {
-              anchors.fill: parent
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              height: Style.spacing.controlHeight + Style.space(6)
               spacing: Style.space(10)
 
               Row {
@@ -1878,7 +2454,7 @@ Panel {
                 // dropped again. The slot stays even when the button does
                 // not, so the rows line up.
                 Button {
-                  readonly property bool removable: wsRow.modelData > 5
+                  readonly property bool removable: wsRow.modelData.id > 5
                   iconText: "\u{F0156}"
                   tooltipText: wsRow.pinned.length > 0
                     ? "Remove this workspace and the rules of the apps pinned to it"
@@ -1928,12 +2504,252 @@ Panel {
           Text {
             textFormat: Text.PlainText
             anchors.verticalCenter: parent.verticalCenter
-            text: "1–5 are always on Omarchy's bar. New ones are added as always-present."
+            text: "1–5 are always listed. New ones are added as always-present."
             color: root.foreground
             opacity: 0.45
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
+        }
+      }
+
+      // ------------------------------------------------- monitors view
+      Column {
+        id: monitorsView
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(10)
+        visible: root.view === "monitors"
+        spacing: Style.space(10)
+
+        // A change that can't be seen can't be confirmed, so it undoes itself.
+        Row {
+          visible: root.confirmLeft > 0
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Keep these display settings? Reverting in " + root.confirmLeft + " s"
+            color: Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+          Button {
+            text: "Keep"
+            bordered: true
+            focusable: true
+            selected: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.keepMonitors()
+          }
+          Button {
+            text: "Revert"
+            bordered: true
+            focusable: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.revertMonitors()
+          }
+        }
+
+        // The layout as it will be: each screen drawn at its position and size.
+        Rectangle {
+          id: layoutMap
+          width: parent.width
+          height: Style.space(230)
+          radius: Style.space(6)
+          color: Util.alpha(root.foreground, 0.05)
+          clip: true
+
+          readonly property real pad: Style.space(14)
+          readonly property real k: Math.min((width - 2 * pad) / root.layoutBounds.w,
+                                             (height - 2 * pad) / root.layoutBounds.h)
+          readonly property real offX: (width - root.layoutBounds.w * k) / 2
+          readonly property real offY: (height - root.layoutBounds.h * k) / 2
+
+          Repeater {
+            model: root.monitorList
+
+            Rectangle {
+              id: screenBox
+              required property var modelData
+              readonly property var now: root.monitorNow(modelData)
+              readonly property var size: root.logicalSize(now.mode, now.scale, now.transform)
+
+              // While dragging, the box follows the pointer; the layout
+              // position it would snap to is in `target`.
+              property bool dragging: false
+              property real pointerDx: 0
+              property real pointerDy: 0
+              readonly property var target: dragging
+                ? root.snapped(modelData.description, now.x + pointerDx, now.y + pointerDy, 6 / layoutMap.k)
+                : null
+              readonly property real shownX: dragging ? (target ? target.x : now.x + pointerDx) : now.x
+              readonly property real shownY: dragging ? (target ? target.y : now.y + pointerDy) : now.y
+
+              x: layoutMap.offX + (shownX - root.layoutBounds.x) * layoutMap.k
+              y: layoutMap.offY + (shownY - root.layoutBounds.y) * layoutMap.k
+              z: dragging ? 2 : 1
+              width: size.w * layoutMap.k
+              height: size.h * layoutMap.k
+              radius: Style.space(3)
+              color: Util.alpha(Color.accent, dragging ? 0.32 : 0.18)
+              border.width: 1
+              border.color: dragging && !target ? "#ff6b6b" : Color.accent
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                preventStealing: true
+                property real startX: 0
+                property real startY: 0
+
+                onPressed: function(mouse) {
+                  if (root.applying) return
+                  var p = mapToItem(layoutMap, mouse.x, mouse.y)
+                  startX = p.x; startY = p.y
+                  screenBox.pointerDx = 0; screenBox.pointerDy = 0
+                  screenBox.dragging = true
+                }
+                onPositionChanged: function(mouse) {
+                  if (!screenBox.dragging) return
+                  var p = mapToItem(layoutMap, mouse.x, mouse.y)
+                  screenBox.pointerDx = (p.x - startX) / layoutMap.k
+                  screenBox.pointerDy = (p.y - startY) / layoutMap.k
+                }
+                onReleased: function() {
+                  if (!screenBox.dragging) return
+                  var spot = screenBox.target
+                  screenBox.dragging = false
+                  if (!spot) {
+                    root.status = "Screens can't overlap"
+                    root.statusError = true
+                    return
+                  }
+                  if (spot.x !== screenBox.now.x || spot.y !== screenBox.now.y)
+                    root.applyMonitor(screenBox.modelData.description, { x: spot.x, y: spot.y })
+                }
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.centerIn: parent
+                width: parent.width - Style.space(6)
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                text: root.shortName(modelData)
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+
+        Repeater {
+          model: root.monitorList
+
+          Item {
+            id: monRow
+            required property var modelData
+            readonly property var now: root.monitorNow(modelData)
+            readonly property string desc: modelData.description
+
+            width: monitorsView.width
+            height: Style.spacing.controlHeight + Style.space(6)
+
+            Row {
+              anchors.fill: parent
+              spacing: Style.space(10)
+
+              Text {
+                textFormat: Text.PlainText
+                width: Style.space(120)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+                text: root.shortName(monRow.modelData)
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Dropdown {
+                width: Style.space(190)
+                anchors.verticalCenter: parent.verticalCenter
+                showLabel: false
+                options: monRow.modelData.modes
+                value: monRow.now.mode
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) { root.applyMonitor(monRow.desc, { mode: value }) }
+              }
+
+              Dropdown {
+                width: Style.space(80)
+                anchors.verticalCenter: parent.verticalCenter
+                showLabel: false
+                options: ["1", "1.25", "1.5", "1.6", "1.75", "2", "3"].map(function(v) { return { value: v, label: v + "×" } })
+                value: String(monRow.now.scale)
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) { root.applyMonitor(monRow.desc, { scale: value }) }
+              }
+
+              Dropdown {
+                width: Style.space(110)
+                anchors.verticalCenter: parent.verticalCenter
+                showLabel: false
+                options: [{ value: "0", label: "Normal" }, { value: "1", label: "90°" },
+                          { value: "2", label: "180°" }, { value: "3", label: "270°" }]
+                value: String(monRow.now.transform)
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) { root.applyMonitor(monRow.desc, { transform: value }) }
+              }
+
+              Dropdown {
+                width: Style.space(190)
+                anchors.verticalCenter: parent.verticalCenter
+                showLabel: false
+                options: {
+                  var out = [{ value: "", label: "Position " + monRow.now.x + ", " + monRow.now.y }]
+                  for (var i = 0; i < root.monitorList.length; i++) {
+                    var other = root.monitorList[i]
+                    if (other.description === monRow.desc) continue
+                    var nm = root.shortName(other)
+                    out.push({ value: "right:" + other.description, label: "Right of " + nm })
+                    out.push({ value: "left:" + other.description, label: "Left of " + nm })
+                    out.push({ value: "above:" + other.description, label: "Above " + nm })
+                    out.push({ value: "below:" + other.description, label: "Below " + nm })
+                  }
+                  return out
+                }
+                value: ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) {
+                  if (value.length === 0) return
+                  var spot = root.placement(monRow.desc, value)
+                  if (spot) root.applyMonitor(monRow.desc, { x: spot.x, y: spot.y })
+                }
+              }
+            }
+          }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: "Drag a screen to move it; it always snaps flush against another. Saved per display, and a change reverts unless you keep it."
+          color: root.foreground
+          opacity: 0.45
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
         }
       }
 

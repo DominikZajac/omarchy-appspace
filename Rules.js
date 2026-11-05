@@ -26,7 +26,7 @@ var SCHEMA_VERSION = 6
 // as its launcher entry and once as the window it actually opens.
 
 function emptyState() {
-  return { rules: [], workspaces: {}, aliases: {}, settings: { updateCheck: true } }
+  return { rules: [], workspaces: {}, aliases: {}, settings: { updateCheck: true, workspaceBar: false }, monitors: {} }
 }
 
 // Measured at login on a busy session, Steam's first window took up to 38 s and
@@ -127,6 +127,17 @@ function normalize(raw) {
   // The only setting so far: whether the plugin asks its own remote for news
   // of a newer version. On unless explicitly switched off.
   if (raw.settings && raw.settings.updateCheck === false) state.settings.updateCheck = false
+  // The workspace strip in the bar is off until switched on.
+  if (raw.settings && raw.settings.workspaceBar === true) state.settings.workspaceBar = true
+
+  // Monitor layout, keyed by the monitor's description (make, model, serial),
+  // which survives a dock renaming its connectors.
+  if (raw.monitors && typeof raw.monitors === "object") {
+    for (var mkey in raw.monitors) {
+      var cleaned = cleanMonitor(raw.monitors[mkey])
+      if (cleaned && String(mkey).length > 0) state.monitors[String(mkey)] = cleaned
+    }
+  }
 
   var alias_map = raw.aliases
   if (alias_map && typeof alias_map === "object") {
@@ -161,7 +172,8 @@ function cloneState(state) {
     out.workspaces[key] = { "monitor": entry["monitor"], "persistent": entry["persistent"] }
   }
   for (var from in state.aliases) out.aliases[from] = state.aliases[from]
-  out.settings = { updateCheck: updateCheckEnabled(state) }
+  for (var mk in state.monitors) out.monitors[mk] = cleanMonitor(state.monitors[mk])
+  out.settings = { updateCheck: updateCheckEnabled(state), workspaceBar: workspaceBarEnabled(state) }
   return out
 }
 
@@ -431,7 +443,8 @@ function toJson(state) {
     "rules": state.rules,
     "workspaces": state.workspaces,
     "aliases": state.aliases,
-    "settings": { "updateCheck": updateCheckEnabled(state) }
+    "monitors": state.monitors,
+    "settings": { "updateCheck": updateCheckEnabled(state), "workspaceBar": workspaceBarEnabled(state) }
   }, null, 2) + "\n"
 }
 
@@ -489,6 +502,135 @@ function sortedWorkspaceNames(state) {
   return names
 }
 
+// Omarchy 4.5 gives every monitor its own workspaces 1-10, numbered in blocks
+// (1-10, 11-20, ...), so "workspace 3 on the LG" is no longer workspace 3. Rules
+// keep storing the slot and the monitor it is pinned to; this turns the pair into
+// the real id when the config loads. Without per-monitor workspaces (older
+// Omarchy) the slot is the id and the monitor pin goes to hl.workspace_rule.
+var SLOT_HELPER = [
+  "-- A tool that plans workspaces globally (hyprmoncfg) switches the per-monitor",
+  "-- numbering off, but its file loads after this one, so look for that switch.",
+  "local function stands_down()",
+  "  local f = io.open((os.getenv(\"HOME\") or \"\") .. \"/.config/hypr/hyprmoncfg-monitors.lua\", \"r\")",
+  "  if not f then return false end",
+  "  local text = f:read(\"*a\") or \"\"",
+  "  f:close()",
+  "  return text:find(\"o.workspaces.enabled = false\", 1, true) ~= nil",
+  "end",
+  "",
+  "local per_monitor = type(o.workspaces) == \"table\" and type(o.workspaces.workspace_id) == \"function\" and not stands_down()",
+  "",
+  "local function owner(desc)",
+  "  local want = (tostring(desc or \"\"):gsub(\"^desc:\", \"\"))",
+  "  if want == \"\" then return nil end",
+  "  for _, m in ipairs(hl.get_monitors()) do",
+  "    if m.description == want then return m end",
+  "  end",
+  "  return nil",
+  "end",
+  "",
+  "-- Hyprland loads this before it has set up its monitors, so at login the live",
+  "-- list is empty. Omarchy keeps which monitor owns which block of ten in a file,",
+  "-- written in earlier sessions, and that is read first.",
+  "local function block_of(desc)",
+  "  local want = (tostring(desc or \"\"):gsub(\"^desc:\", \"\"))",
+  "  if want == \"\" then return nil end",
+  "  local base = os.getenv(\"XDG_STATE_HOME\") or ((os.getenv(\"HOME\") or \"\") .. \"/.local/state\")",
+  "  local f = io.open(base .. \"/omarchy/monitor-workspaces\", \"r\")",
+  "  if not f then return nil end",
+  "  local found = nil",
+  "  for line in f:lines() do",
+  "    local block, identity = line:match(\"^(%d+)\\t[^\\t]*\\t(.+)$\")",
+  "    if block and (identity:gsub(\" #%d+$\", \"\")) == want then found = tonumber(block); break end",
+  "  end",
+  "  f:close()",
+  "  return found",
+  "end",
+  "",
+  "local function ws(slot, desc)",
+  "  if per_monitor and desc and desc ~= \"\" then",
+  "    local block = block_of(desc)",
+  "    if block then return tostring(block * 10 + tonumber(slot)) end",
+  "    local m = owner(desc)",
+  "    if m then return tostring(o.workspaces.workspace_id(m, tonumber(slot))) end",
+  "  end",
+  "  return tostring(slot)",
+  "end"
+]
+
+// ------------------------------------------------------------------ monitors
+
+// One monitor's layout: mode ("2560x1440@164.84" or "preferred"), position,
+// scale, rotation. Anything that is not a plain number or a plain mode is
+// refused rather than written into Lua.
+function cleanMonitor(entry) {
+  if (!entry || typeof entry !== "object") return null
+  var mode = String(entry["mode"] === undefined ? "preferred" : entry["mode"])
+  if (mode !== "preferred" && mode !== "highres" && mode !== "highrr"
+      && !/^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]{1,3})?)?$/.test(mode)) return null
+  var x = Number(entry["x"] === undefined ? 0 : entry["x"])
+  var y = Number(entry["y"] === undefined ? 0 : entry["y"])
+  var scale = Number(entry["scale"] === undefined ? 1 : entry["scale"])
+  var transform = Number(entry["transform"] === undefined ? 0 : entry["transform"])
+  if (!isFinite(x) || !isFinite(y) || Math.abs(x) > 100000 || Math.abs(y) > 100000) return null
+  if (!isFinite(scale) || scale < 0.25 || scale > 8) return null
+  if (!(transform >= 0 && transform <= 7) || Math.floor(transform) !== transform) return null
+  return {
+    "mode": mode,
+    "x": Math.round(x),
+    "y": Math.round(y),
+    "scale": Math.round(scale * 100) / 100,
+    "transform": transform,
+    "enabled": entry["enabled"] !== false
+  }
+}
+
+function monitorEntry(state, description) {
+  var entry = state.monitors[String(description).replace(/^desc:/, "")]
+  return entry ? entry : null
+}
+
+// Sets one monitor's layout, from a description (with or without "desc:") and
+// the fields to change. Returns null when the result would not be valid.
+function setMonitor(state, description, fields) {
+  var key = String(description || "").replace(/^desc:/, "")
+  if (key.length === 0) return null
+  var current = state.monitors[key] || { "mode": "preferred", "x": 0, "y": 0, "scale": 1, "transform": 0, "enabled": true }
+  var merged = {}
+  for (var f in current) merged[f] = current[f]
+  for (var g in fields) merged[g] = fields[g]
+  var cleaned = cleanMonitor(merged)
+  if (!cleaned) return null
+  var next = cloneState(state)
+  next.monitors[key] = cleaned
+  return next
+}
+
+function removeMonitor(state, description) {
+  var next = cloneState(state)
+  delete next.monitors[String(description).replace(/^desc:/, "")]
+  return next
+}
+
+function monitorLuaLines(state) {
+  var lines = []
+  var keys = []
+  for (var key in state.monitors) keys.push(key)
+  keys.sort()
+  for (var i = 0; i < keys.length; i++) {
+    var m = state.monitors[keys[i]]
+    var out = "desc:" + keys[i]
+    if (m["enabled"] === false) {
+      lines.push("hl.monitor({ output = " + luaString(out) + ", disabled = true })")
+      continue
+    }
+    lines.push("hl.monitor({ output = " + luaString(out) + ", mode = " + luaString(m["mode"])
+      + ", position = " + luaString(m["x"] + "x" + m["y"]) + ", scale = " + m["scale"]
+      + ", transform = " + m["transform"] + " })")
+  }
+  return lines
+}
+
 // `guards` maps a rule's class to the process names to look for before
 // launching it, for apps found to start themselves through an XDG autostart
 // entry. Any other app is launched unconditionally.
@@ -501,20 +643,77 @@ function toLua(state, guards) {
   // somewhere else a missing `o`/`hl` must not blow up the whole config.
   lines.push("if type(hl) ~= \"table\" or type(o) ~= \"table\" then return end")
   lines.push("")
+  for (var h = 0; h < SLOT_HELPER.length; h++) lines.push(SLOT_HELPER[h])
+  lines.push("")
+
+  var monitorLines = monitorLuaLines(state)
+  if (monitorLines.length > 0) {
+    lines.push("-- Monitor layout")
+    for (var ml = 0; ml < monitorLines.length; ml++) lines.push(monitorLines[ml])
+    lines.push("")
+  }
 
   var names = sortedWorkspaceNames(state).filter(function(name) {
     return !workspaceIsEmpty(state.workspaces[name])
   })
   lines.push("-- Workspace rules: monitor pinning and always-present workspaces")
   if (names.length === 0) lines.push("-- (none)")
+  // The lowest slot a monitor owns is the one it starts on. Omarchy 4.5 would
+  // otherwise start it on slot 1 of its block, which may belong to another screen.
+  var lowest = {}
+  for (var n = 0; n < names.length; n++) {
+    var owner = state.workspaces[names[n]]["monitor"]
+    if (owner.length === 0 || !/^([1-9]|10)$/.test(names[n])) continue
+    var slot = parseInt(names[n], 10)
+    if (lowest[owner] === undefined || slot < lowest[owner]) lowest[owner] = slot
+  }
   for (var i = 0; i < names.length; i++) {
     var entry = state.workspaces[names[i]]
-    var parts = ["workspace = " + luaString(names[i])]
-    if (entry["monitor"].length > 0) parts.push("monitor = " + luaString(entry["monitor"]))
+    var mon = entry["monitor"]
+    var parts = ["workspace = ws(" + luaString(names[i]) + ", " + luaString(mon) + ")"]
     if (entry["persistent"]) parts.push("persistent = true")
-    lines.push("hl.workspace_rule({ " + parts.join(", ") + " })")
+    if (mon.length > 0 && lowest[mon] === parseInt(names[i], 10)) {
+      lines.push("hl.workspace_rule({ " + parts.join(", ") + ", monitor = " + luaString(mon) + ", default = per_monitor or nil })")
+    } else if (mon.length > 0) {
+      lines.push("hl.workspace_rule({ " + parts.join(", ") + ", monitor = (not per_monitor) and " + luaString(mon) + " or nil })")
+    } else {
+      lines.push("hl.workspace_rule({ " + parts.join(", ") + " })")
+    }
   }
   lines.push("")
+
+  // With per-monitor workspaces Super+N means "slot N on the monitor you are on".
+  // A slot assigned to a monitor is made to mean that monitor's slot from
+  // anywhere, so the key always lands where the slot lives.
+  var owned = names.filter(function(name) {
+    return state.workspaces[name]["monitor"].length > 0 && /^([1-9]|10)$/.test(name)
+  })
+  if (owned.length > 0) {
+    lines.push("-- Keys follow the assignment: Super+N goes to the monitor that owns slot N")
+    lines.push("if per_monitor and type(o.rebind) == \"function\" then")
+    lines.push("  local function move_to(slot, desc, follow)")
+    lines.push("    return function()")
+    lines.push("      local window, m = hl.get_active_window(), owner(desc)")
+    lines.push("      if not window or not m then return end")
+    lines.push("      hl.dispatch(hl.dsp.window.move({ workspace = ws(slot, desc), follow = follow, window = \"address:\" .. window.address }))")
+    lines.push("    end")
+    lines.push("  end")
+    lines.push("")
+    lines.push("  local function bind_slot(slot, desc)")
+    lines.push("    local key = \"code:\" .. tostring(slot + 9)")
+    lines.push("    o.rebind(\"SUPER + \" .. key, \"Switch to workspace \" .. slot, function()")
+    lines.push("      local m = owner(desc)")
+    lines.push("      if m then o.workspaces.focus(slot, m.name)() end")
+    lines.push("    end)")
+    lines.push("    o.rebind(\"SUPER + SHIFT + \" .. key, \"Move window to workspace \" .. slot, move_to(slot, desc, true))")
+    lines.push("    o.rebind(\"SUPER + SHIFT + ALT + \" .. key, \"Move window silently to workspace \" .. slot, move_to(slot, desc, false))")
+    lines.push("  end")
+    lines.push("")
+    for (var b = 0; b < owned.length; b++)
+      lines.push("  bind_slot(" + owned[b] + ", " + luaString(state.workspaces[owned[b]]["monitor"]) + ")")
+    lines.push("end")
+    lines.push("")
+  }
 
   lines.push("-- Application -> workspace, and apps kept from taking focus, every time they open")
   var placed = 0
@@ -532,8 +731,9 @@ function toLua(state, guards) {
       continue
     }
     if (rule["startupOnly"] === true) { atStartup.push(rule); continue }
-    var target = rule["workspace"] + (rule["silent"] ? " silent" : "")
-    lines.push("o.window(" + pattern + ", { workspace = " + luaString(target) + " })" + comment)
+    var slotExpr = "ws(" + luaString(rule["workspace"]) + ", " + luaString(workspaceMonitor(state, rule["workspace"])) + ")"
+    var target = slotExpr + (rule["silent"] ? " .. \" silent\"" : "")
+    lines.push("o.window(" + pattern + ", { workspace = " + target + " })" + comment)
     placed++
   }
   if (placed === 0) lines.push("-- (none)")
@@ -546,7 +746,7 @@ function toLua(state, guards) {
     lines.push("  local placements = {")
     for (var q = 0; q < atStartup.length; q++) {
       var rr = atStartup[q]
-      lines.push("    { class = " + luaString(rr["class"]) + ", workspace = " + luaString(rr["workspace"])
+      lines.push("    { class = " + luaString(rr["class"]) + ", workspace = ws(" + luaString(rr["workspace"]) + ", " + luaString(workspaceMonitor(state, rr["workspace"])) + ")"
         + ", follow = " + (rr["silent"] ? "false" : "true")
         + ", within = " + rr["startupWindow"] + " },"
         + "  -- " + luaComment(rr["label"]))
@@ -745,7 +945,17 @@ function updateCheckEnabled(state) {
 
 function setUpdateCheck(state, on) {
   var next = cloneState(state)
-  next.settings = { updateCheck: on === true }
+  next.settings = { updateCheck: on === true, workspaceBar: workspaceBarEnabled(state) }
+  return next
+}
+
+function workspaceBarEnabled(state) {
+  return !!state && !!state.settings && state.settings.workspaceBar === true
+}
+
+function setWorkspaceBar(state, on) {
+  var next = cloneState(state)
+  next.settings = { updateCheck: updateCheckEnabled(state), workspaceBar: on === true }
   return next
 }
 
@@ -852,9 +1062,10 @@ function monitorLabel(monitors, index) {
 // The `window` key is required. Hyprland silently ignores unknown keys and
 // falls back to the ACTIVE window, so a typo here would move whatever the
 // user happens to be looking at.
-function moveWindowLua(address, workspace) {
-  return "hl.dispatch(hl.dsp.window.move({ workspace = " + luaString(String(workspace))
-    + ", follow = false, window = " + luaString("address:" + String(address)) + " }))"
+function moveWindowLua(address, workspace, monitor) {
+  return "do " + SLOT_HELPER.join(" ") + " hl.dispatch(hl.dsp.window.move({ workspace = ws("
+    + luaString(String(workspace)) + ", " + luaString(String(monitor || ""))
+    + "), follow = false, window = " + luaString("address:" + String(address)) + " })) end"
 }
 
 // ------------------------------------------------------------------ helpers
@@ -1016,7 +1227,13 @@ if (typeof module !== "undefined") {
     launchCommand: launchCommand,
     parseAutostart: parseAutostart,
     parseHiddenEntries: parseHiddenEntries,
+    cleanMonitor: cleanMonitor,
+    monitorEntry: monitorEntry,
+    setMonitor: setMonitor,
+    removeMonitor: removeMonitor,
     updateCheckEnabled: updateCheckEnabled,
+    workspaceBarEnabled: workspaceBarEnabled,
+    setWorkspaceBar: setWorkspaceBar,
     setUpdateCheck: setUpdateCheck,
     parseUpdateProbe: parseUpdateProbe,
     relativeTime: relativeTime,

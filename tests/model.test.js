@@ -86,9 +86,9 @@ test("generated Lua carries window rules, workspace rules and a guard", () => {
   const lua = Rules.toLua(state)
 
   assert.match(lua, /if type\(hl\) ~= "table" or type\(o\) ~= "table" then return end/)
-  assert.match(lua, /hl\.workspace_rule\(\{ workspace = "3", monitor = "desc:LG" \}\)/)
-  assert.match(lua, /hl\.workspace_rule\(\{ workspace = "6", persistent = true \}\)/)
-  assert.match(lua, /o\.window\("\^vesktop\$", \{ workspace = "3 silent" \}\)/)
+  assert.match(lua, /hl\.workspace_rule\(\{ workspace = ws\("3", "desc:LG"\), monitor = "desc:LG", default = per_monitor or nil \}\)/)
+  assert.match(lua, /hl\.workspace_rule\(\{ workspace = ws\("6", ""\), persistent = true \}\)/)
+  assert.match(lua, /o\.window\("\^vesktop\$", \{ workspace = ws\("3", "desc:LG"\) \.\. " silent" \}\)/)
 })
 
 test("generated Lua is syntactically valid", (t) => {
@@ -616,10 +616,10 @@ test("generated Lua has a permanent rule or a startup placement, never both", ()
   state = Rules.upsert(state, "evil\nhl.exec_cmd('x')", "3", true, "label\nhl.exec_cmd('x')")
   state = Rules.setStartupOnly(state, "evil\nhl.exec_cmd('x')", true, 30)
   const lua = Rules.toLua(state)
-  assert.match(lua, /o\.window\("\^foot\$", \{ workspace = "2" \}\)/)
+  assert.match(lua, /o\.window\("\^foot\$", \{ workspace = ws\("2", ""\) \}\)/)
   const evilRules = lua.split("\n").filter(l => /o\.window\("\^evil/.test(l))
   assert.equal(evilRules.length, 0, "a startup-only app has no permanent rule")
-  assert.match(lua, /\{ class = "evil\\nhl\.exec_cmd\('x'\)", workspace = "3", follow = false, within = 30 \},/)
+  assert.match(lua, /\{ class = "evil\\nhl\.exec_cmd\('x'\)", workspace = ws\("3", ""\), follow = false, within = 30 \},/)
   assert.ok(!/\nhl\.exec_cmd/.test(lua), "no injected line")
   assert.ok(!/placements/.test(Rules.toLua(Rules.upsert(Rules.emptyState(), "foot", "2", false, "Foot"))),
     "no handler when nothing is startup-only")
@@ -729,7 +729,7 @@ test("an unplaced app can still open silently, and that rule disappears when swi
 
   // Placing it turns the same setting into the ordinary "silent" workspace rule.
   const placed = Rules.upsert(state, "spotify", "4", true, "Spotify")
-  assert.match(Rules.toLua(placed), /workspace = "4 silent"/)
+  assert.match(Rules.toLua(placed), /workspace = ws\("4", ""\) \.\. " silent"/)
   assert.ok(!/no_initial_focus/.test(Rules.toLua(placed)))
 
   assert.deepEqual(Rules.upsert(state, "spotify", "", false, "Spotify").rules, [])
@@ -864,4 +864,57 @@ test("every Text element in the panel renders plain text", () => {
     }
   }
   assert.deepEqual(offenders, [], "Text without textFormat: Text.PlainText")
+})
+
+test("a slot assigned to a monitor gets keys that go to that monitor, from anywhere", () => {
+  let state = Rules.emptyState()
+  state = Rules.setWorkspaceMonitor(state, "2", "desc:LG")
+  const lua = Rules.toLua(state)
+  assert.match(lua, /bind_slot\(2, "desc:LG"\)/)
+  assert.match(lua, /o\.rebind\("SUPER \+ " \.\. key, "Switch to workspace "/)
+  assert.doesNotMatch(lua, /bind_slot\(1,/)
+})
+
+test("without an assigned monitor there are no key bindings to generate", () => {
+  const state = Rules.setWorkspacePersistent(Rules.emptyState(), "6", true)
+  assert.doesNotMatch(Rules.toLua(state), /bind_slot/)
+})
+
+test("the workspace strip in the bar is off by default and survives a round trip", () => {
+  let state = Rules.emptyState()
+  assert.equal(Rules.workspaceBarEnabled(state), false)
+  state = Rules.setWorkspaceBar(state, true)
+  const back = Rules.normalize(JSON.parse(Rules.toJson(state)))
+  assert.equal(Rules.workspaceBarEnabled(back), true)
+  assert.equal(Rules.updateCheckEnabled(Rules.setUpdateCheck(back, true)), true)
+  assert.equal(Rules.workspaceBarEnabled(Rules.setUpdateCheck(back, false)), true)
+})
+
+test("a monitor layout is written as hl.monitor by description and survives a round trip", () => {
+  let state = Rules.setMonitor(Rules.emptyState(), "desc:LG Electronics MP59G 0x01010101",
+    { mode: "1920x1080@74.97", x: 2102, y: 680, scale: 1 })
+  assert.ok(state)
+  const lua = Rules.toLua(state)
+  assert.match(lua, /hl\.monitor\(\{ output = "desc:LG Electronics MP59G 0x01010101", mode = "1920x1080@74\.97", position = "2102x680", scale = 1, transform = 0 \}\)/)
+  const back = Rules.normalize(JSON.parse(Rules.toJson(state)))
+  assert.deepEqual(back.monitors, state.monitors)
+})
+
+test("a monitor layout that is not plain numbers is refused, and a disabled one says so", () => {
+  const base = Rules.emptyState()
+  assert.equal(Rules.setMonitor(base, "X", { mode: "1920x1080\", os.execute(\"x\")" }), null)
+  assert.equal(Rules.setMonitor(base, "X", { scale: 99 }), null)
+  assert.equal(Rules.setMonitor(base, "X", { transform: 9 }), null)
+  assert.equal(Rules.setMonitor(base, "X", { x: "1; boom" }), null)
+  const off = Rules.setMonitor(base, "X", { enabled: false })
+  assert.match(Rules.toLua(off), /hl\.monitor\(\{ output = "desc:X", disabled = true \}\)/)
+})
+
+test("only the lowest slot a monitor owns is its starting workspace; the others are plain", () => {
+  let state = Rules.emptyState()
+  state = Rules.setWorkspaceMonitor(state, "2", "desc:LG")
+  state = Rules.setWorkspaceMonitor(state, "4", "desc:LG")
+  const lua = Rules.toLua(state)
+  assert.match(lua, /workspace = ws\("2", "desc:LG"\), monitor = "desc:LG", default = per_monitor or nil/)
+  assert.match(lua, /workspace = ws\("4", "desc:LG"\), monitor = \(not per_monitor\) and "desc:LG" or nil/)
 })

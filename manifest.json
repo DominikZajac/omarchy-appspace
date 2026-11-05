@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "dominikzajac.appspace",
   "name": "AppSpace",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "author": "Dominik Zajac",
   "license": "MIT",
-  "description": "Manage where apps open: which workspace, and on which monitor.",
+  "description": "Manage where apps open and how your monitors are laid out: workspaces, monitors, and workspaces per monitor on Omarchy 4.5.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "AppSpace",
-    "description": "Manage where apps open: which workspace, and on which monitor.",
+    "description": "Manage where apps open and how your monitors are laid out: workspaces, monitors, and workspaces per monitor on Omarchy 4.5.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"
