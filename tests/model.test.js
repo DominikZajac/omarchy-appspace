@@ -911,13 +911,14 @@ test("a monitor layout that is not plain numbers is refused, and a disabled one 
   assert.match(Rules.toLua(off), /hl\.monitor\(\{ output = "desc:X", disabled = true \}\)/)
 })
 
-test("only the lowest slot a monitor owns is its starting workspace; the others are plain", () => {
+test("only the lowest slot a monitor owns is its starting workspace; every owned slot is pinned to it", () => {
   let state = Rules.emptyState()
   state = Rules.setWorkspaceMonitor(state, "2", "desc:LG")
   state = Rules.setWorkspaceMonitor(state, "4", "desc:LG")
   const lua = Rules.toLua(state)
   assert.match(lua, /workspace = ws\("2", "desc:LG"\), monitor = "desc:LG", default = per_monitor or nil/)
-  assert.match(lua, /workspace = ws\("4", "desc:LG"\), monitor = \(not per_monitor\) and "desc:LG" or nil/)
+  // the others are pinned to the monitor too, but are not its starting workspace
+  assert.match(lua, /workspace = ws\("4", "desc:LG"\), monitor = "desc:LG" \}\)/)
 })
 
 test("the slot number in the bar marker is on by default, can be switched off, and settings keep each other", () => {

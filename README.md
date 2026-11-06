@@ -117,6 +117,9 @@ globally underneath, in blocks of ten: the first monitor has 1-10, the next 11-2
 - **Each monitor starts on the lowest slot it owns.** Omarchy would start it on slot 1
   of its own block, which may belong to another screen, so a window dropped there would
   sit on a workspace nothing lists. With slots 2-4 assigned to a monitor, it starts on 2.
+- **Assigned slots are pinned to their monitor.** A workspace a window rule creates (an app
+  that opens on slot 3 at login) is otherwise made on whichever monitor has focus, which at
+  login is the first one, not the one that owns the slot.
 - **A workspace strip in the bar.** The **Bar workspaces** button on the Settings tab (or
   `omarchy-shell dominikzajac.appspace strip on`) shows, inside the AppSpace widget,
   the slots the bar's own monitor owns (its first five when it owns none), and turns

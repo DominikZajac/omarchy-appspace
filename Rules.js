@@ -692,7 +692,9 @@ function toLua(state, guards) {
     if (mon.length > 0 && lowest[mon] === parseInt(names[i], 10)) {
       lines.push("hl.workspace_rule({ " + parts.join(", ") + ", monitor = " + luaString(mon) + ", default = per_monitor or nil })")
     } else if (mon.length > 0) {
-      lines.push("hl.workspace_rule({ " + parts.join(", ") + ", monitor = (not per_monitor) and " + luaString(mon) + " or nil })")
+      // Pinned in both modes: a workspace made by a window rule is otherwise created on
+      // whichever monitor has focus, which at login is not the one that owns it.
+      lines.push("hl.workspace_rule({ " + parts.join(", ") + ", monitor = " + luaString(mon) + " })")
     } else {
       lines.push("hl.workspace_rule({ " + parts.join(", ") + " })")
     }

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dominikzajac.appspace",
   "name": "AppSpace",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": "Dominik Zajac",
   "license": "MIT",
   "description": "Where apps open, how your monitors are laid out, and workspaces per monitor on Omarchy 4.5: assign workspaces to screens, drag screens into place with a keep-or-revert safety net, and show each monitor's own workspaces in the bar.",
